@@ -4,7 +4,6 @@ from pathlib import Path
 
 from .spreads import SPREADS
 
-
 CARDS_FILE = Path(__file__).parent / "cards.json"
 
 

@@ -149,20 +149,40 @@ async def get_question(
     spread_name = data["spread_name"]
     use_reversed = data["reversed_cards"]
 
-    draw_start = time.perf_counter()
+    try:
+        draw_start = time.perf_counter()
 
-    spread = make_spread(
-        spread_name,
-        reversed_cards=use_reversed
-    )
+        spread = make_spread(
+            spread_name,
+            reversed_cards=use_reversed
+        )
 
-    draw_time = time.perf_counter() - draw_start
+        draw_time = time.perf_counter() - draw_start
 
-    # Сначала показываем пользователю сами карты.
-    await message.answer(
-        format_spread(spread),
-        parse_mode="Markdown"
-    )
+        # Сначала показываем пользователю сами карты.
+        await message.answer(
+            format_spread(spread),
+            parse_mode="Markdown"
+        )
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Question: {question}\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (draw)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await message.answer(
+            "🔮 Не получилось вытянуть карты для этого расклада. "
+            "Попробуй начать заново через /start."
+        )
+
+        await state.clear()
+        return
 
     try:
         gemini_start = time.perf_counter()
