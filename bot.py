@@ -14,12 +14,15 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
 from keyboards import (
+    main_menu_keyboard,
     spread_keyboard,
     reversed_keyboard,
     after_reading_keyboard,
     history_keyboard,
-    reading_keyboard
+    reading_keyboard,
+    llm_error_keyboard
 )
+
 from states import TarotStates
 from tarot.deck import make_spread, draw_single_card
 from tarot.renderer import render_spread, render_single_card
@@ -51,44 +54,108 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 
+SPREAD_DESCRIPTIONS = {
+    "one_card": (
+        "Один символический взгляд на ситуацию.\n\n"
+        "Подходит, когда тебе нужен короткий фокус: "
+        "что сейчас особенно важно увидеть или осознать."
+    ),
+
+    "three_cards": (
+        "Короткий разбор динамики ситуации.\n\n"
+        "Первая карта показывает, что происходит сейчас, "
+        "вторая — скрытый фактор, третья — направление развития."
+    ),
+
+    "relationship": (
+        "Расклад о динамике между тобой и другим человеком.\n\n"
+        "Он помогает посмотреть на твою позицию, "
+        "позицию другого человека, то, что происходит между вами, "
+        "скрытые факторы и возможное направление отношений."
+    ),
+
+    "choice": (
+        "Расклад для ситуации, в которой перед тобой два варианта.\n\n"
+        "Он сравнивает потенциал и возможные риски каждого пути, "
+        "чтобы тебе было проще увидеть разницу между ними."
+    ),
+
+    "seven_cards": (
+        "Подробный разбор ситуации.\n\n"
+        "Карты рассматривают её с разных сторон: "
+        "прошлое влияние, настоящее, ближайшее развитие, "
+        "скрытые факторы, совет и возможный итог."
+    ),
+
+    "celtic_cross": (
+        "Глубокий расклад для сложных ситуаций.\n\n"
+        "Десять карт помогают рассмотреть ситуацию целиком: "
+        "внутренние и внешние факторы, прошлое, настоящее, "
+        "возможное развитие, надежды, страхи и итоговую тенденцию."
+    ),
+}
+
+def get_spread_setup_text(spread_name: str) -> str:
+    spread_title = html.escape(
+        SPREADS[spread_name]["name"].upper()
+    )
+
+    description = html.escape(
+        SPREAD_DESCRIPTIONS[spread_name]
+    )
+
+    return (
+        f"🔮 <b>{spread_title}</b>\n\n"
+        f"{description}\n\n"
+        "──────────────\n\n"
+        "<b>Использовать перевёрнутые карты?</b>"
+    )
+
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
-    await state.set_state(TarotStates.choosing_spread)
+    await state.clear()
 
     await message.answer(
-        "🔮 Привет.\n\n"
-        "Я твой личный AI-таролог.\n\n"
-        "Выбери расклад:",
-        reply_markup=spread_keyboard()
+        "🔮 <b>MY PERSONAL TAROT</b>\n\n"
+        "Не предсказываю будущее.\n"
+        "Помогаю посмотреть на ситуацию с другой стороны.\n\n"
+        "Выбери, что хочешь сделать:",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
     )
+
+@dp.callback_query(F.data == "main_menu")
+async def main_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+
+    await callback.message.edit_text(
+        "🔮 <b>MY PERSONAL TAROT</b>\n\n"
+        "Не предсказываю будущее.\n"
+        "Помогаю посмотреть на ситуацию\n"
+        "с другой стороны.\n\n"
+        "Выбери, что хочешь сделать:",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
+    )
+
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("spread:"))
-async def choose_spread(
-    callback: CallbackQuery,
-    state: FSMContext
-):
+async def choose_spread(callback: CallbackQuery, state: FSMContext):
     spread_name = callback.data.split(":")[1]
 
     if spread_name not in SPREADS:
-        await callback.answer(
-            "Неизвестный расклад."
-        )
+        await callback.answer("Неизвестный расклад.")
         return
 
     await state.clear()
-
-    await state.update_data(
-        spread_name=spread_name
-    )
-
-    await state.set_state(
-        TarotStates.choosing_reversed
-    )
+    await state.update_data(spread_name=spread_name)
+    await state.set_state(TarotStates.choosing_reversed)
 
     await callback.message.edit_text(
-        "🔮 Отлично.\n\n"
-        "Использовать перевёрнутые карты?",
+        get_spread_setup_text(spread_name),
+        parse_mode="HTML",
         reply_markup=reversed_keyboard()
     )
 
@@ -104,6 +171,9 @@ async def choose_reversed(
 ):
     use_reversed = callback.data == "reversed:yes"
 
+    data = await state.get_data()
+    spread_name = data["spread_name"]
+
     await state.update_data(
         reversed_cards=use_reversed
     )
@@ -112,9 +182,19 @@ async def choose_reversed(
         TarotStates.waiting_for_question
     )
 
+    spread_title = html.escape(
+        SPREADS[spread_name]["name"].upper()
+    )
+
     await callback.message.edit_text(
-        "🔮 Всё готово.\n\n"
-        "Теперь задай свой вопрос."
+        f"🔮 <b>{spread_title}</b>\n\n"
+        "Теперь задай свой вопрос.\n\n"
+        "Чем конкретнее ситуация, тем полезнее "
+        "получится интерпретация.\n\n"
+        "<b>Например:</b>\n"
+        "«Какой подход к поиску работы сейчас "
+        "будет для меня наиболее продуктивным?»",
+        parse_mode="HTML"
     )
 
     await callback.answer()
@@ -227,27 +307,154 @@ def llm_to_html(text: str) -> str:
 
     return text
 
+
+FOLLOWUP_HINT = (
+    "\n\n💬 Можешь задать уточняющий вопрос по раскладу "
+    "— просто напиши его. Или вытяни ещё одну уточняющую "
+    "карту кнопкой ниже."
+)
+
+
+async def send_llm_response(
+    answer,
+    text: str,
+    prefix: str = "",
+    suffix: str = ""
+) -> list[str]:
+    """
+    Отправляет длинный ответ LLM, разбивая его на части
+    и добавляя префикс/суффикс только к первой/последней части.
+    Используется и для основной интерпретации, и для повтора,
+    и для уточняющих ответов.
+    """
+
+    chunks = split_text(text, limit=3900)
+
+    for index, chunk in enumerate(chunks):
+        is_first = index == 0
+        is_last = index == len(chunks) - 1
+
+        formatted_chunk = llm_to_html(chunk)
+
+        if is_first and prefix:
+            formatted_chunk = prefix + formatted_chunk
+
+        if is_last and suffix:
+            formatted_chunk = formatted_chunk + suffix
+
+        await answer(
+            formatted_chunk,
+            parse_mode="HTML",
+            reply_markup=(
+                after_reading_keyboard()
+                if is_last
+                else None
+            )
+        )
+
+    return chunks
+
+@dp.message(Command("about"))
+async def about_command(message: Message):
+    await message.answer(
+        "🔮 <b>MY PERSONAL TAROT</b>\n\n"
+        "AI-таролог на основе системы "
+        "Райдера—Уэйта.\n\n"
+        "<b>Внутри:</b>\n"
+        "• 78 карт\n"
+        "• прямые и перевёрнутые положения\n"
+        "• 6 типов раскладов\n"
+        "• персональная интерпретация вопроса\n"
+        "• история раскладов\n"
+        "• изображения карт\n\n"
+        "Таро здесь используется как инструмент "
+        "символического анализа и рефлексии.\n\n"
+        "Финальное решение всегда остаётся за тобой.",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "❓ <b>ПОМОЩЬ</b>\n\n"
+        "<b>Как сделать расклад?</b>\n\n"
+        "1. Выбери тип расклада.\n"
+        "2. Реши, использовать ли перевёрнутые карты.\n"
+        "3. Задай свой вопрос.\n"
+        "4. Получи расклад и интерпретацию.\n\n"
+        "<b>Как задавать вопросы?</b>\n\n"
+        "Лучше всего работают конкретные вопросы, "
+        "связанные с реальной ситуацией.\n\n"
+        "❌ «Что меня ждёт?»\n\n"
+        "✅ «Какой подход к поиску работы сейчас "
+        "будет для меня наиболее продуктивным?»\n\n"
+        "<b>Команды:</b>\n"
+        "/start — главное меню\n"
+        "/new — новый расклад\n"
+        "/history — история\n"
+        "/about — о боте\n"
+        "/help — помощь\n"
+        "/reset — сбросить текущий расклад",
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data == "about")
+async def about_callback(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "📚 <b>КАК ЭТО РАБОТАЕТ</b>\n\n"
+        "Таро здесь — инструмент символического "
+        "анализа, а не способ узнать будущее.\n\n"
+        "Карты не знают фактов о твоей жизни "
+        "и не могут достоверно предсказывать события "
+        "или читать мысли других людей.\n\n"
+        "Вместо этого расклад помогает посмотреть "
+        "на ситуацию через систему символов: "
+        "увидеть возможные факторы, противоречия, "
+        "риски и направления для размышления.\n\n"
+        "Ты задаёшь вопрос.\n"
+        "Карты формируют структуру расклада.\n"
+        "AI интерпретирует их в контексте твоего вопроса.\n\n"
+        "А решение всегда остаётся за тобой.",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
+    )
+
+    await callback.answer()
+
 @dp.message(Command("reset"))
 async def reset(message: Message, state: FSMContext):
+    await state.clear()
+
+    await message.answer(
+        "🔮 <b>Текущий расклад сброшен.</b>\n\n"
+        "Что хочешь сделать?",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
+    )
+
+@dp.message(Command("new"))
+async def new_command(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(TarotStates.choosing_spread)
 
     await message.answer(
-        "🔮 Начнём новый расклад.\n\n"
-        "Выбери расклад:",
+        "🃏 <b>НОВЫЙ РАСКЛАД</b>\n\n"
+        "Выбери формат, который лучше подходит "
+        "твоему вопросу:",
+        parse_mode="HTML",
         reply_markup=spread_keyboard()
     )
+
 @dp.callback_query(F.data == "new_reading")
-async def new_reading(
-    callback: CallbackQuery,
-    state: FSMContext
-):
+async def new_reading(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(TarotStates.choosing_spread)
 
-    await callback.message.answer(
-        "🔮 Новый расклад.\n\n"
-        "Выбери расклад:",
+    await callback.message.edit_text(
+        "🃏 <b>НОВЫЙ РАСКЛАД</b>\n\n"
+        "Выбери формат, который лучше подходит "
+        "твоему вопросу:",
+        parse_mode="HTML",
         reply_markup=spread_keyboard()
     )
 
@@ -283,9 +490,21 @@ async def get_question(
 
     try:
         draw_start = time.perf_counter()
+        await message.answer(
+            "🔮 <b>РАСКЛАД СОЗДАЁТСЯ</b>\n\n"
+            "Выбираю карты и собираю их\n"
+            "в контексте твоего вопроса…",
+            parse_mode="HTML"
+        )
 
         spread = make_spread(
             spread_name,
+            reversed_cards=use_reversed
+        )
+        await state.update_data(
+            spread=spread,
+            question=question,
+            spread_name=spread_name,
             reversed_cards=use_reversed
         )
 
@@ -371,12 +590,16 @@ async def get_question(
         )
 
         await message.answer(
-            "🔮 Карты уже вытянуты выше, но мне не удалось "
-            "получить их интерпретацию.\n\n"
-            "Попробуй повторить запрос чуть позже."
+            "⚠️ <b>ИНТЕРПРЕТАЦИЯ ВРЕМЕННО НЕДОСТУПНА</b>\n\n"
+            "Карты уже выбраны, но сейчас AI "
+            "не смог завершить интерпретацию.\n\n"
+            "Твой расклад не потерян. "
+            "Можно попробовать ещё раз — "
+            "карты останутся теми же.",
+            parse_mode="HTML",
+            reply_markup=llm_error_keyboard()
         )
 
-        await state.clear()
         return
 
     # -------------------------
@@ -414,40 +637,12 @@ async def get_question(
     try:
         telegram_start = time.perf_counter()
 
-        chunks = split_text(
+        chunks = await send_llm_response(
+            message.answer,
             interpretation,
-            limit=3900
+            prefix="🔮 <b>Интерпретация расклада</b>\n\n",
+            suffix=FOLLOWUP_HINT
         )
-
-        for index, chunk in enumerate(chunks):
-            formatted_chunk = llm_to_html(chunk)
-
-            is_first = index == 0
-            is_last = index == len(chunks) - 1
-
-            prefix = (
-                "🔮 <b>Интерпретация расклада</b>\n\n"
-                if is_first
-                else ""
-            )
-
-            suffix = (
-                "\n\n💬 Можешь задать уточняющий вопрос по раскладу "
-                "— просто напиши его. Или вытяни ещё одну уточняющую "
-                "карту кнопкой ниже."
-                if is_last
-                else ""
-            )
-
-            await message.answer(
-                prefix + formatted_chunk + suffix,
-                parse_mode="HTML",
-                reply_markup=(
-                    after_reading_keyboard()
-                    if is_last
-                    else None
-                )
-            )
 
         telegram_time = time.perf_counter() - telegram_start
         total_time = time.perf_counter() - total_start
@@ -496,6 +691,130 @@ async def get_question(
         question=question,
         interpretation=interpretation,
         history=[]
+    )
+
+@dp.message(TarotStates.processing)
+async def still_processing(message: Message):
+    """
+    Подстраховка: расклад уже вытянут, но интерпретация ещё не
+    получена (либо только что упала с ошибкой) — без этого хендлера
+    сообщение пользователя в этом состоянии просто теряется.
+    """
+
+    await message.answer(
+        "🔮 Уже пробую получить интерпретацию этого расклада.\n\n"
+        "Если выше есть кнопка «🔄 Повторить» — нажми её, "
+        "либо напиши /reset, чтобы начать заново."
+    )
+
+@dp.callback_query(F.data == "retry_interpretation")
+async def retry_interpretation(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    data = await state.get_data()
+
+    spread = data.get("spread")
+    spread_name = data.get("spread_name")
+    question = data.get("question")
+
+    if not spread or not spread_name or not question:
+        await callback.answer(
+            "Расклад не найден. Начни новый расклад.",
+            show_alert=True
+        )
+        return
+
+    await callback.answer("Повторяю интерпретацию…")
+
+    try:
+        await callback.message.answer(
+            "🔄 <b>ПОВТОРНАЯ ПОПЫТКА</b>\n\n"
+            "Карты остаются прежними.\n"
+            "Пробую получить интерпретацию ещё раз…",
+            parse_mode="HTML"
+        )
+
+        llm_start = time.perf_counter()
+
+        interpretation = await asyncio.to_thread(
+            interpret_tarot,
+            question=question,
+            spread_name=spread_name,
+            spread=spread
+        )
+
+        llm_time = time.perf_counter() - llm_start
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Question: {question}\n"
+            f"Spread: {spread_name}\n"
+            f"Cards: {len(spread)}\n"
+            f"LLM time: {time.perf_counter() - llm_start:.3f}s\n"
+            "Status: ERROR (RETRY)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await callback.message.answer(
+            "⚠️ <b>Интерпретация снова недоступна.</b>\n\n"
+            "Карты сохранены. Можно попробовать ещё раз "
+            "или начать новый расклад.",
+            parse_mode="HTML",
+            reply_markup=llm_error_keyboard()
+        )
+        return
+
+    # Сохраняем успешную интерпретацию
+    try:
+        await asyncio.to_thread(
+            save_reading,
+            user_id=callback.from_user.id,
+            question=question,
+            spread_name=spread_name,
+            spread=spread,
+            interpretation=interpretation
+        )
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Question: {question}\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (DATABASE RETRY)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+    chunks = await send_llm_response(
+        callback.message.answer,
+        interpretation,
+        prefix="🔮 <b>Интерпретация расклада</b>\n\n",
+        suffix=FOLLOWUP_HINT
+    )
+
+    await state.set_state(TarotStates.follow_up)
+
+    await state.update_data(
+        interpretation=interpretation,
+        history=[]
+    )
+
+    print(
+        "\n"
+        "========== TAROT METRICS ==========\n"
+        f"Question: {question}\n"
+        f"Spread: {spread_name}\n"
+        f"Cards: {len(spread)}\n"
+        f"LLM time: {llm_time:.3f}s\n"
+        f"Response length: {len(interpretation)} chars\n"
+        f"Response chunks: {len(chunks)}\n"
+        "Status: RETRY SUCCESS\n"
+        "===================================\n"
     )
 
 @dp.message(TarotStates.follow_up)
@@ -723,6 +1042,7 @@ async def show_history(
             "📖 <b>История пока пуста.</b>\n\n"
             "Сделай первый расклад, и он появится здесь.",
             parse_mode="HTML",
+            reply_markup=history_keyboard([])
         )
 
         await callback.answer()

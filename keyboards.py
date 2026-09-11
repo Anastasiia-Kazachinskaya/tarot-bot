@@ -1,15 +1,39 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🃏 Новый расклад",
+                    callback_data="new_reading"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📖 История",
+                    callback_data="history"
+                ),
+                InlineKeyboardButton(
+                    text="📚 Как это работает",
+                    callback_data="about"
+                )
+            ],
+        ]
+    )
+
+
 def spread_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🃏 1 карта",
+                    text="🃏 Одна карта",
                     callback_data="spread:one_card"
                 ),
                 InlineKeyboardButton(
-                    text="🃏 3 карты",
+                    text="🃏 Три карты",
                     callback_data="spread:three_cards"
                 ),
             ],
@@ -25,13 +49,19 @@ def spread_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🔮 7 карт",
+                    text="🔮 Семь карт",
                     callback_data="spread:seven_cards"
                 ),
                 InlineKeyboardButton(
-                    text="☦️ Кельтский крест",
+                    text="✥ Кельтский крест",
                     callback_data="spread:celtic_cross"
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="← Главное меню",
+                    callback_data="main_menu"
+                )
             ],
         ]
     )
@@ -46,12 +76,19 @@ def reversed_keyboard() -> InlineKeyboardMarkup:
                     callback_data="reversed:yes"
                 ),
                 InlineKeyboardButton(
-                    text="➡️ Нет",
+                    text="Нет",
                     callback_data="reversed:no"
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="← Назад",
+                    callback_data="new_reading"
+                )
             ]
         ]
     )
+
 
 def after_reading_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -72,11 +109,14 @@ def after_reading_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="📖 История",
                     callback_data="history"
+                ),
+                InlineKeyboardButton(
+                    text="⌂ Главное меню",
+                    callback_data="main_menu"
                 )
-            ]
+            ],
         ]
     )
-
 
 def history_keyboard(readings) -> InlineKeyboardMarkup:
     buttons = []
@@ -94,16 +134,29 @@ def history_keyboard(readings) -> InlineKeyboardMarkup:
             )
         ])
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=buttons
-    )
+    buttons.append([
+        InlineKeyboardButton(
+            text="🃏 Новый расклад",
+            callback_data="new_reading"
+        )
+    ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="⌂ Главное меню",
+            callback_data="main_menu"
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
 def reading_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← Назад к истории",
+                    text="← История",
                     callback_data="history"
                 )
             ],
@@ -111,7 +164,33 @@ def reading_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🔮 Новый расклад",
                     callback_data="new_reading"
+                ),
+                InlineKeyboardButton(
+                    text="⌂ Меню",
+                    callback_data="main_menu"
                 )
             ]
+        ]
+    )
+
+def llm_error_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Повторить",
+                    callback_data="retry_interpretation"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔮 Новый расклад",
+                    callback_data="new_reading"
+                ),
+                InlineKeyboardButton(
+                    text="⌂ Меню",
+                    callback_data="main_menu"
+                )
+            ],
         ]
     )
