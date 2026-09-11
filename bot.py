@@ -1,20 +1,34 @@
-
 import asyncio
+import json
 import os
 import time
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery, Message, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, Message
 from dotenv import load_dotenv
 
-from keyboards import spread_keyboard, reversed_keyboard
+from keyboards import (
+    spread_keyboard,
+    reversed_keyboard,
+    after_reading_keyboard,
+    history_keyboard,
+    reading_keyboard
+)
 from states import TarotStates
 from tarot.deck import make_spread
+from tarot.renderer import render_spread
 from llm.cloudru import interpret_tarot
+from tarot.spreads import SPREADS
 
+from database import (
+    init_database,
+    save_reading,
+    get_user_readings,
+    get_reading
+)
 
 load_dotenv()
 
@@ -128,6 +142,31 @@ def format_spread(spread: list[dict]) -> str:
 
     return "\n".join(lines)
 
+@dp.message(Command("reset"))
+async def reset(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(TarotStates.choosing_spread)
+
+    await message.answer(
+        "🔮 Начнём новый расклад.\n\n"
+        "Выбери расклад:",
+        reply_markup=spread_keyboard()
+    )
+@dp.callback_query(F.data == "new_reading")
+async def new_reading(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    await state.clear()
+    await state.set_state(TarotStates.choosing_spread)
+
+    await callback.message.answer(
+        "🔮 Новый расклад.\n\n"
+        "Выбери расклад:",
+        reply_markup=spread_keyboard()
+    )
+
+    await callback.answer()
 
 @dp.message(TarotStates.waiting_for_question)
 async def get_question(
@@ -149,6 +188,10 @@ async def get_question(
     spread_name = data["spread_name"]
     use_reversed = data["reversed_cards"]
 
+    # -------------------------
+    # 1. Вытягиваем карты
+    # -------------------------
+
     try:
         draw_start = time.perf_counter()
 
@@ -159,11 +202,32 @@ async def get_question(
 
         draw_time = time.perf_counter() - draw_start
 
-        # Сначала показываем пользователю сами карты.
-        await message.answer(
-            format_spread(spread),
-            parse_mode="Markdown"
+        image_path = await asyncio.to_thread(
+            render_spread,
+            spread,
+            spread_name
         )
+
+        caption_lines = [
+            f"📍 {item['position']} — "
+            f"{item['card']['name']} · "
+            f"{'перевёрнутая' if item['card']['reversed'] else 'прямая'}"
+            for item in spread
+        ]
+
+        caption = (
+            f"🔮 **{SPREADS[spread_name]['name']}**\n\n"
+            + "\n".join(caption_lines)
+        )
+
+        try:
+            await message.answer_photo(
+                photo=FSInputFile(image_path),
+                caption=caption,
+                parse_mode="Markdown"
+            )
+        finally:
+            image_path.unlink(missing_ok=True)
 
     except Exception as error:
         print(
@@ -184,24 +248,87 @@ async def get_question(
         await state.clear()
         return
 
+    # -------------------------
+    # 2. Получаем интерпретацию
+    # -------------------------
+
     try:
-        gemini_start = time.perf_counter()
+        llm_start = time.perf_counter()
 
         interpretation = await asyncio.to_thread(
-        interpret_tarot,
-        question=question,
-        spread_name=spread_name,
-        spread=spread
-    )
+            interpret_tarot,
+            question=question,
+            spread_name=spread_name,
+            spread=spread
+        )
 
-        gemini_time = time.perf_counter() - gemini_start
+        llm_time = time.perf_counter() - llm_start
 
+    except Exception as error:
+        total_time = time.perf_counter() - total_start
+
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Question: {question}\n"
+            f"Spread: {spread_name}\n"
+            f"Cards: {len(spread)}\n"
+            f"Draw time: {draw_time:.3f}s\n"
+            f"Total time: {total_time:.3f}s\n"
+            "Status: ERROR (LLM)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await message.answer(
+            "🔮 Карты уже вытянуты выше, но мне не удалось "
+            "получить их интерпретацию.\n\n"
+            "Попробуй повторить запрос чуть позже."
+        )
+
+        await state.clear()
+        return
+
+    # -------------------------
+    # 3. Сохраняем чтение
+    # -------------------------
+
+    try:
+        await asyncio.to_thread(
+            save_reading,
+            user_id=message.from_user.id,
+            question=question,
+            spread_name=spread_name,
+            spread=spread,
+            interpretation=interpretation
+        )
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Question: {question}\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (DATABASE)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        # Само чтение всё равно можно показать пользователю.
+        # Ошибка сохранения не должна ломать весь расклад.
+
+    # -------------------------
+    # 4. Отправляем интерпретацию
+    # -------------------------
+
+    try:
         telegram_start = time.perf_counter()
 
         await message.answer(
             f"🔮 **Интерпретация расклада**\n\n"
             f"{interpretation}",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=after_reading_keyboard()
         )
 
         telegram_time = time.perf_counter() - telegram_start
@@ -214,7 +341,7 @@ async def get_question(
             f"Spread: {spread_name}\n"
             f"Cards: {len(spread)}\n"
             f"Draw time: {draw_time:.3f}s\n"
-            f"Gemini time: {gemini_time:.3f}s\n"
+            f"LLM time: {llm_time:.3f}s\n"
             f"Telegram time: {telegram_time:.3f}s\n"
             f"Total time: {total_time:.3f}s\n"
             f"Response length: {len(interpretation)} chars\n"
@@ -232,23 +359,99 @@ async def get_question(
             f"Spread: {spread_name}\n"
             f"Cards: {len(spread)}\n"
             f"Draw time: {draw_time:.3f}s\n"
+            f"LLM time: {llm_time:.3f}s\n"
             f"Total time: {total_time:.3f}s\n"
-            "Status: ERROR\n"
+            "Status: ERROR (TELEGRAM)\n"
             f"Error: {error}\n"
             "===================================\n"
-        )
-
-        await message.answer(
-            "🔮 Карты уже вытянуты выше, но мне не удалось "
-            "получить их интерпретацию.\n\n"
-            "Попробуй повторить запрос чуть позже."
         )
 
     finally:
         await state.clear()
 
+@dp.callback_query(F.data == "history")
+async def show_history(
+    callback: CallbackQuery
+):
+    readings = await asyncio.to_thread(
+        get_user_readings,
+        user_id=callback.from_user.id
+    )
+
+    if not readings:
+        await callback.message.edit_text(
+            "📖 **История пока пуста.**\n\n"
+            "Сделай первый расклад, и он появится здесь.",
+            parse_mode="Markdown"
+        )
+
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "📖 **История раскладов**\n\n"
+        "Выбери расклад, чтобы открыть его:",
+        parse_mode="Markdown",
+        reply_markup=history_keyboard(readings)
+    )
+
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("history_reading:"))
+async def show_reading(
+    callback: CallbackQuery
+):
+    try:
+        reading_id = int(
+            callback.data.split(":")[1]
+        )
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Не удалось открыть расклад."
+        )
+        return
+
+    reading = await asyncio.to_thread(
+        get_reading,
+        reading_id=reading_id,
+        user_id=callback.from_user.id
+    )
+
+    if reading is None:
+        await callback.answer(
+            "Расклад не найден."
+        )
+        return
+
+    spread = json.loads(
+        reading["spread"]
+    )
+
+    created_at = reading["created_at"]
+    question = reading["question"]
+    interpretation = reading["interpretation"]
+
+    text = (
+        "🔮 **Расклад из истории**\n\n"
+        f"📅 {created_at[:10]}\n\n"
+        f"❓ **Вопрос:**\n"
+        f"{question}\n\n"
+        f"{format_spread(spread)}\n\n"
+        "🔮 **Интерпретация**\n\n"
+        f"{interpretation}"
+    )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=reading_keyboard()
+    )
+
+    await callback.answer()
+
 
 async def main():
+    init_database()
     await dp.start_polling(bot)
 
 

@@ -1,0 +1,15 @@
+from tarot.deck import make_spread
+from tarot.renderer import render_spread
+
+
+spread = make_spread(
+    "celtic_cross",
+    reversed_cards=True
+)
+
+image_path = render_spread(
+    spread,
+    "celtic_cross"
+)
+
+print(f"✓ Расклад собран: {image_path}")
