@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 
 from .deck import get_card_image
 
@@ -13,6 +13,36 @@ PADDING = 40
 
 BACKGROUND_COLOR = "white"
 
+def get_font(size: int, bold: bool = False):
+    font_names = (
+        [
+            # macOS
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            # Linux (Debian/Ubuntu, RHEL/Fedora)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        ]
+        if bold
+        else [
+            # macOS
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            # Linux (Debian/Ubuntu, RHEL/Fedora)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        ]
+    )
+
+    for font_name in font_names:
+        if Path(font_name).exists():
+            return ImageFont.truetype(font_name, size)
+
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        # Старые версии Pillow не поддерживают size у load_default.
+        return ImageFont.load_default()
 
 def render_spread(
     spread: list[dict],
@@ -192,30 +222,49 @@ def render_spread(
     # =================================================
     # ВЫБОР
     #
-    #             ┌───┐
-    #             │ 1 │
-    #             └───┘
+    #                    СИТУАЦИЯ
+    #                       [1]
     #
-    #      ┌───┐          ┌───┐
-    #      │ 2 │          │ 4 │
-    #      └───┘          └───┘
+    #             ВАРИАНТ А      ВАРИАНТ Б
     #
-    #      ┌───┐          ┌───┐
-    #      │ 3 │          │ 5 │
-    #      └───┘          └───┘
+    #                [2]            [4]
+    #             потенциал      потенциал
+    #
+    #                [3]            [5]
+    #                риск            риск
+    #
     # =================================================
 
     elif spread_name == "choice":
-        width = (
-            PADDING * 2
-            + CARD_WIDTH * 2
-            + CARD_GAP * 2
+
+        option_gap = 70
+        situation_gap = 45
+        row_gap = 28
+
+        options_width = (
+            CARD_WIDTH * 2
+            + option_gap
         )
 
-        height = (
+        width = (
             PADDING * 2
-            + CARD_HEIGHT * 3
-            + CARD_GAP * 2
+            + options_width
+        )
+
+        # Компактная высота:
+        # заголовок + карта 1 + варианты + две строки карт
+        height = (
+            PADDING
+            + 32
+            + 15
+            + CARD_HEIGHT
+            + situation_gap
+            + 30
+            + 15
+            + CARD_HEIGHT
+            + row_gap
+            + CARD_HEIGHT
+            + 45
         )
 
         canvas = Image.new(
@@ -224,60 +273,193 @@ def render_spread(
             BACKGROUND_COLOR
         )
 
-        # Ситуация
+        draw = ImageDraw.Draw(canvas)
+
+        title_font = get_font(25, bold=True)
+        small_font = get_font(16, bold=True)
+
+        # -------------------------------------------------
+        # Вспомогательная функция
+        # -------------------------------------------------
+
+        def draw_centered_text(
+            text: str,
+            center_x: int,
+            y: int,
+            font
+        ):
+            bbox = draw.textbbox(
+                (0, 0),
+                text,
+                font=font
+            )
+
+            text_width = bbox[2] - bbox[0]
+
+            draw.text(
+                (
+                    center_x - text_width // 2,
+                    y
+                ),
+                text,
+                fill="black",
+                font=font
+            )
+
+        # =================================================
+        # №1 — СИТУАЦИЯ
+        # =================================================
+
+        situation_center = width // 2
+
+        draw_centered_text(
+            "СИТУАЦИЯ",
+            situation_center,
+            PADDING,
+            title_font
+        )
+
+        situation_y = (
+            PADDING
+            + 32
+            + 15
+        )
+
         situation_x = (
             width - CARD_WIDTH
         ) // 2
 
         canvas.paste(
             cards[0],
-            (situation_x, PADDING)
+            (
+                situation_x,
+                situation_y
+            )
         )
 
-        # Начало вариантов
-        option_y = (
-            PADDING
+        # =================================================
+        # ВАРИАНТ А / Б
+        # =================================================
+
+        options_label_y = (
+            situation_y
             + CARD_HEIGHT
-            + CARD_GAP
+            + situation_gap
         )
 
-        # Вариант A
+        left_x = PADDING
+
+        right_x = (
+            PADDING
+            + CARD_WIDTH
+            + option_gap
+        )
+
+        left_center = (
+            left_x
+            + CARD_WIDTH // 2
+        )
+
+        right_center = (
+            right_x
+            + CARD_WIDTH // 2
+        )
+
+        draw_centered_text(
+            "ВАРИАНТ А",
+            left_center,
+            options_label_y,
+            title_font
+        )
+
+        draw_centered_text(
+            "ВАРИАНТ Б",
+            right_center,
+            options_label_y,
+            title_font
+        )
+
+        # =================================================
+        # ПОТЕНЦИАЛ
+        # =================================================
+
+        potential_y = (
+            options_label_y
+            + 30
+            + 15
+        )
+
         canvas.paste(
             cards[1],
-            (PADDING, option_y)
+            (
+                left_x,
+                potential_y
+            )
+        )
+
+        canvas.paste(
+            cards[3],
+            (
+                right_x,
+                potential_y
+            )
+        )
+
+        draw_centered_text(
+            "потенциал",
+            left_center,
+            potential_y + CARD_HEIGHT + 5,
+            small_font
+        )
+
+        draw_centered_text(
+            "потенциал",
+            right_center,
+            potential_y + CARD_HEIGHT + 5,
+            small_font
+        )
+
+        # =================================================
+        # РИСК
+        # =================================================
+
+        risk_y = (
+            potential_y
+            + CARD_HEIGHT
+            + row_gap
+            + 20
         )
 
         canvas.paste(
             cards[2],
             (
-                PADDING,
-                option_y
-                + CARD_HEIGHT
-                + CARD_GAP
+                left_x,
+                risk_y
             )
-        )
-
-        # Вариант B
-        right_x = (
-            PADDING
-            + CARD_WIDTH
-            + CARD_GAP * 2
-        )
-
-        canvas.paste(
-            cards[3],
-            (right_x, option_y)
         )
 
         canvas.paste(
             cards[4],
             (
                 right_x,
-                option_y
-                + CARD_HEIGHT
-                + CARD_GAP
+                risk_y
             )
         )
+
+        draw_centered_text(
+            "риск",
+            left_center,
+            risk_y + CARD_HEIGHT + 5,
+            small_font
+        )
+
+        draw_centered_text(
+            "риск",
+            right_center,
+            risk_y + CARD_HEIGHT + 5,
+            small_font
+        )
+
 
     # =================================================
     # 7 КАРТ
@@ -634,13 +816,15 @@ def render_spread(
             f"Неподдерживаемый расклад: {spread_name}"
         )
 
-    # =================================================
-    # Сохранение результата
-    #
-    # Имя файла уникально для каждого вызова, чтобы
-    # параллельные запросы разных пользователей не
-    # перезаписывали изображение друг друга.
-    # =================================================
+    return _save_render(canvas)
+
+
+def _save_render(canvas: Image.Image) -> Path:
+    """
+    Сохраняет готовое изображение под уникальным именем, чтобы
+    параллельные запросы разных пользователей не перезаписывали
+    изображение друг друга.
+    """
 
     output_path = (
         Path(__file__).parent
@@ -659,3 +843,38 @@ def render_spread(
     )
 
     return output_path
+
+
+def render_single_card(card: dict) -> Path:
+    """
+    Рендерит одну карту саму по себе — используется для
+    уточняющей карты, вытянутой дополнительно к раскладу.
+    """
+
+    image_path = get_card_image(card)
+
+    image = Image.open(image_path).convert("RGB")
+
+    image = ImageOps.contain(
+        image,
+        (CARD_WIDTH, CARD_HEIGHT)
+    )
+
+    if card["reversed"]:
+        image = image.rotate(180)
+
+    width = PADDING * 2 + CARD_WIDTH
+    height = PADDING * 2 + CARD_HEIGHT
+
+    canvas = Image.new(
+        "RGB",
+        (width, height),
+        BACKGROUND_COLOR
+    )
+
+    canvas.paste(
+        image,
+        (PADDING, PADDING)
+    )
+
+    return _save_render(canvas)

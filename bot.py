@@ -2,10 +2,13 @@ import asyncio
 import json
 import os
 import time
+import html
+import re
+import traceback
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message, FSInputFile
+from aiogram.types import CallbackQuery, ErrorEvent, Message, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
@@ -18,9 +21,13 @@ from keyboards import (
     reading_keyboard
 )
 from states import TarotStates
-from tarot.deck import make_spread
-from tarot.renderer import render_spread
-from llm.cloudru import interpret_tarot
+from tarot.deck import make_spread, draw_single_card
+from tarot.renderer import render_spread, render_single_card
+from llm.cloudru import (
+    interpret_tarot,
+    answer_followup,
+    interpret_clarifying_card
+)
 from tarot.spreads import SPREADS
 
 from database import (
@@ -56,15 +63,20 @@ async def start(message: Message, state: FSMContext):
     )
 
 
-@dp.callback_query(
-    TarotStates.choosing_spread,
-    F.data.startswith("spread:")
-)
+@dp.callback_query(F.data.startswith("spread:"))
 async def choose_spread(
     callback: CallbackQuery,
     state: FSMContext
 ):
     spread_name = callback.data.split(":")[1]
+
+    if spread_name not in SPREADS:
+        await callback.answer(
+            "Неизвестный расклад."
+        )
+        return
+
+    await state.clear()
 
     await state.update_data(
         spread_name=spread_name
@@ -81,7 +93,6 @@ async def choose_spread(
     )
 
     await callback.answer()
-
 
 @dp.callback_query(
     TarotStates.choosing_reversed,
@@ -116,13 +127,15 @@ def format_spread(spread: list[dict]) -> str:
     """
 
     lines = [
-        "🔮 **Твой расклад**",
+        "🔮 <b>Твой расклад</b>",
         ""
     ]
 
     for index, item in enumerate(spread, start=1):
-        position = item["position"]
+        position = html.escape(item["position"])
         card = item["card"]
+
+        card_name = html.escape(card["name"])
 
         orientation = (
             "прямая"
@@ -131,16 +144,88 @@ def format_spread(spread: list[dict]) -> str:
         )
 
         lines.append(
-            f"**{index}. {position}**"
+            f"<b>{index}. {position}</b>"
         )
 
         lines.append(
-            f"🃏 {card['name']} — {orientation}"
+            f"🃏 {card_name} — {orientation}"
         )
 
         lines.append("")
 
     return "\n".join(lines)
+
+def split_text(text: str, limit: int = 3900) -> list[str]:
+    """
+    Разбивает длинный текст на части, стараясь
+    не разрывать абзацы.
+    """
+
+    paragraphs = text.split("\n\n")
+
+    chunks = []
+    current = ""
+
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+
+        if not paragraph:
+            continue
+
+        # Если отдельный абзац сам длиннее лимита,
+        # режем его дополнительно.
+        while len(paragraph) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+
+            chunks.append(paragraph[:limit])
+            paragraph = paragraph[limit:]
+
+        if not paragraph:
+            continue
+
+        candidate = (
+            f"{current}\n\n{paragraph}"
+            if current
+            else paragraph
+        )
+
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = paragraph
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def llm_to_html(text: str) -> str:
+    """
+    Преобразует ответ LLM в безопасный Telegram HTML.
+    """
+
+    text = html.escape(text)
+
+    # **текст** -> <b>текст</b>
+    text = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"<b>\1</b>",
+        text
+    )
+
+    # ### Заголовок -> <b>Заголовок</b>
+    text = re.sub(
+        r"^#{1,6}\s*(.+)$",
+        r"<b>\1</b>",
+        text,
+        flags=re.MULTILINE
+    )
+
+    return text
 
 @dp.message(Command("reset"))
 async def reset(message: Message, state: FSMContext):
@@ -181,6 +266,10 @@ async def get_question(
         )
         return
 
+    await state.set_state(
+        TarotStates.processing
+    )
+
     total_start = time.perf_counter()
 
     data = await state.get_data()
@@ -215,16 +304,17 @@ async def get_question(
             for item in spread
         ]
 
-        caption = (
-            f"🔮 **{SPREADS[spread_name]['name']}**\n\n"
-            + "\n".join(caption_lines)
-        )
-
         try:
             await message.answer_photo(
                 photo=FSInputFile(image_path),
-                caption=caption,
-                parse_mode="Markdown"
+                caption=(
+                    f"🔮 <b>{html.escape(SPREADS[spread_name]['name'])}</b>\n\n"
+                    + "\n".join(
+                        html.escape(line)
+                        for line in caption_lines
+                    )
+                ),
+                parse_mode="HTML"
             )
         finally:
             image_path.unlink(missing_ok=True)
@@ -324,12 +414,40 @@ async def get_question(
     try:
         telegram_start = time.perf_counter()
 
-        await message.answer(
-            f"🔮 **Интерпретация расклада**\n\n"
-            f"{interpretation}",
-            parse_mode="Markdown",
-            reply_markup=after_reading_keyboard()
+        chunks = split_text(
+            interpretation,
+            limit=3900
         )
+
+        for index, chunk in enumerate(chunks):
+            formatted_chunk = llm_to_html(chunk)
+
+            is_first = index == 0
+            is_last = index == len(chunks) - 1
+
+            prefix = (
+                "🔮 <b>Интерпретация расклада</b>\n\n"
+                if is_first
+                else ""
+            )
+
+            suffix = (
+                "\n\n💬 Можешь задать уточняющий вопрос по раскладу "
+                "— просто напиши его. Или вытяни ещё одну уточняющую "
+                "карту кнопкой ниже."
+                if is_last
+                else ""
+            )
+
+            await message.answer(
+                prefix + formatted_chunk + suffix,
+                parse_mode="HTML",
+                reply_markup=(
+                    after_reading_keyboard()
+                    if is_last
+                    else None
+                )
+            )
 
         telegram_time = time.perf_counter() - telegram_start
         total_time = time.perf_counter() - total_start
@@ -345,6 +463,7 @@ async def get_question(
             f"Telegram time: {telegram_time:.3f}s\n"
             f"Total time: {total_time:.3f}s\n"
             f"Response length: {len(interpretation)} chars\n"
+            f"Response chunks: {len(chunks)}\n"
             "Status: SUCCESS\n"
             "===================================\n"
         )
@@ -366,8 +485,229 @@ async def get_question(
             "===================================\n"
         )
 
-    finally:
-        await state.clear()
+    # Переходим в режим уточняющих вопросов: пока пользователь не
+    # начнёт новый расклад, любое его текстовое сообщение считается
+    # уточняющим вопросом по этому же раскладу.
+
+    await state.set_state(TarotStates.follow_up)
+
+    await state.update_data(
+        spread=spread,
+        question=question,
+        interpretation=interpretation,
+        history=[]
+    )
+
+@dp.message(TarotStates.follow_up)
+async def get_followup(
+    message: Message,
+    state: FSMContext
+):
+    follow_up_question = message.text
+
+    if not follow_up_question:
+        await message.answer(
+            "🔮 Пожалуйста, напиши уточняющий вопрос текстом."
+        )
+        return
+
+    data = await state.get_data()
+
+    spread_name = data["spread_name"]
+    spread = data["spread"]
+    base_question = data["question"]
+    base_interpretation = data["interpretation"]
+    history = data.get("history", [])
+
+    try:
+        answer = await asyncio.to_thread(
+            answer_followup,
+            base_question=base_question,
+            spread_name=spread_name,
+            spread=spread,
+            base_interpretation=base_interpretation,
+            history=history,
+            follow_up_question=follow_up_question
+        )
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Follow-up question: {follow_up_question}\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (FOLLOWUP)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await message.answer(
+            "🔮 Не получилось получить ответ на уточняющий вопрос. "
+            "Попробуй ещё раз чуть позже."
+        )
+        return
+
+    history.append({
+        "question": follow_up_question,
+        "answer": answer
+    })
+
+    await state.update_data(history=history)
+
+    chunks = split_text(answer, limit=3900)
+
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+
+        await message.answer(
+            llm_to_html(chunk),
+            parse_mode="HTML",
+            reply_markup=(
+                after_reading_keyboard()
+                if is_last
+                else None
+            )
+        )
+
+@dp.callback_query(F.data == "draw_clarifying_card")
+async def draw_clarifying_card_callback(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+    data = await state.get_data()
+
+    spread = data.get("spread")
+    spread_name = data.get("spread_name")
+    base_question = data.get("question")
+    base_interpretation = data.get("interpretation")
+
+    if not spread:
+        await callback.answer(
+            "Сначала сделай расклад через /start.",
+            show_alert=True
+        )
+        return
+
+    await callback.answer()
+
+    use_reversed = data.get("reversed_cards", True)
+    exclude_names = {item["card"]["name"] for item in spread}
+
+    try:
+        new_card = await asyncio.to_thread(
+            draw_single_card,
+            exclude_names,
+            use_reversed
+        )
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (CLARIFYING DRAW)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await callback.message.answer(
+            "🔮 Не получилось вытянуть уточняющую карту. "
+            "Попробуй ещё раз чуть позже."
+        )
+        return
+
+    clarifying_count = sum(
+        1 for item in spread
+        if item["position"].startswith("Уточняющая карта")
+    )
+
+    position_label = (
+        "Уточняющая карта"
+        if clarifying_count == 0
+        else f"Уточняющая карта №{clarifying_count + 1}"
+    )
+
+    new_item = {
+        "position": position_label,
+        "card": new_card
+    }
+
+    spread = spread + [new_item]
+
+    orientation = (
+        "прямая"
+        if not new_card["reversed"]
+        else "перевёрнутая"
+    )
+
+    try:
+        image_path = await asyncio.to_thread(
+            render_single_card,
+            new_card
+        )
+
+        try:
+            await callback.message.answer_photo(
+                photo=FSInputFile(image_path),
+                caption=(
+                    f"🔎 <b>{html.escape(position_label)}</b>\n\n"
+                    f"🃏 {html.escape(new_card['name'])} — {orientation}"
+                ),
+                parse_mode="HTML"
+            )
+        finally:
+            image_path.unlink(missing_ok=True)
+
+        interpretation = await asyncio.to_thread(
+            interpret_clarifying_card,
+            base_question,
+            spread_name,
+            spread,
+            base_interpretation,
+            new_item
+        )
+
+    except Exception as error:
+        print(
+            "\n"
+            "========== TAROT METRICS ==========\n"
+            f"Spread: {spread_name}\n"
+            "Status: ERROR (CLARIFYING INTERPRETATION)\n"
+            f"Error: {error}\n"
+            "===================================\n"
+        )
+
+        await callback.message.answer(
+            "🔮 Карта вытянута, но не получилось получить её "
+            "интерпретацию. Попробуй ещё раз чуть позже."
+        )
+        return
+
+    history = data.get("history", [])
+
+    history.append({
+        "question": f"[Вытянута уточняющая карта: {new_card['name']} ({orientation})]",
+        "answer": interpretation
+    })
+
+    await state.update_data(
+        spread=spread,
+        history=history
+    )
+
+    chunks = split_text(interpretation, limit=3900)
+
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+
+        await callback.message.answer(
+            llm_to_html(chunk),
+            parse_mode="HTML",
+            reply_markup=(
+                after_reading_keyboard()
+                if is_last
+                else None
+            )
+        )
 
 @dp.callback_query(F.data == "history")
 async def show_history(
@@ -380,21 +720,20 @@ async def show_history(
 
     if not readings:
         await callback.message.edit_text(
-            "📖 **История пока пуста.**\n\n"
+            "📖 <b>История пока пуста.</b>\n\n"
             "Сделай первый расклад, и он появится здесь.",
-            parse_mode="Markdown"
+            parse_mode="HTML",
         )
 
         await callback.answer()
         return
 
     await callback.message.edit_text(
-        "📖 **История раскладов**\n\n"
-        "Выбери расклад, чтобы открыть его:",
-        parse_mode="Markdown",
-        reply_markup=history_keyboard(readings)
-    )
-
+            "📖 <b>История раскладов</b>\n\n"
+            "Выбери расклад, чтобы открыть его:",
+            parse_mode="HTML",
+            reply_markup=history_keyboard(readings)
+        )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("history_reading:"))
@@ -428,26 +767,77 @@ async def show_reading(
     )
 
     created_at = reading["created_at"]
-    question = reading["question"]
+    question = html.escape(reading["question"])
     interpretation = reading["interpretation"]
 
-    text = (
-        "🔮 **Расклад из истории**\n\n"
+    header = (
+        "🔮 <b>Расклад из истории</b>\n\n"
         f"📅 {created_at[:10]}\n\n"
-        f"❓ **Вопрос:**\n"
+        f"❓ <b>Вопрос:</b>\n"
         f"{question}\n\n"
         f"{format_spread(spread)}\n\n"
-        "🔮 **Интерпретация**\n\n"
-        f"{interpretation}"
+        "🔮 <b>Интерпретация</b>"
     )
+
+    chunks = split_text(interpretation, limit=3900)
 
     await callback.message.edit_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=reading_keyboard()
+        header,
+        parse_mode="HTML",
+        reply_markup=(
+            reading_keyboard()
+            if not chunks
+            else None
+        )
     )
 
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+
+        await callback.message.answer(
+            llm_to_html(chunk),
+            parse_mode="HTML",
+            reply_markup=(
+                reading_keyboard()
+                if is_last
+                else None
+            )
+        )
+
     await callback.answer()
+
+
+@dp.errors()
+async def handle_error(event: ErrorEvent):
+    """
+    Ловит любое исключение, не пойманное внутри хендлеров,
+    чтобы пользователь получал понятный ответ вместо тишины.
+    """
+
+    print(
+        "\n"
+        "========== UNHANDLED ERROR ==========\n"
+        f"Error: {event.exception!r}\n"
+        "======================================\n"
+    )
+
+    traceback.print_exception(event.exception)
+
+    update = event.update
+
+    try:
+        if update.message:
+            await update.message.answer(
+                "🔮 Что-то пошло не так. "
+                "Попробуй начать заново через /start."
+            )
+        elif update.callback_query:
+            await update.callback_query.answer(
+                "Что-то пошло не так. Попробуй /start.",
+                show_alert=True
+            )
+    except Exception:
+        pass
 
 
 async def main():

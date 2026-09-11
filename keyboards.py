@@ -58,6 +58,12 @@ def after_reading_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="🔎 Уточняющая карта",
+                    callback_data="draw_clarifying_card"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🔮 Новый расклад",
                     callback_data="new_reading"
                 )

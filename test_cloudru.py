@@ -1,40 +1,29 @@
-from llm.cloudru import interpret_tarot
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
 
 
-spread = [
-    {
-        "position": "Главная энергия ситуации",
-        "card": {
-            "name": "Тройка Жезлов",
-            "arcana": "minor",
-            "suit": "wands",
-            "reversed": True,
-            "meaning": (
-                "Пересмотр планов, задержка, ограниченный горизонт, "
-                "сомнения в дальнейшем направлении, ожидание результата, "
-                "который пока не приходит."
-            )
+load_dotenv()
+
+client = OpenAI(
+    api_key=os.getenv("CLOUD_API_KEY"),
+    base_url="https://foundation-models.api.cloud.ru/v1",
+    timeout=60.0
+)
+
+
+response = client.chat.completions.create(
+    model="ai-sage/GigaChat3.5-432B-A28B",
+    messages=[
+        {
+            "role": "user",
+            "content": "Привет! Ответь одним коротким предложением."
         }
-    }
-]
+    ],
+    max_completion_tokens=100,
+    temperature=0.5,
+    top_p=0.95,
+)
 
-
-questions = [
-    "Что меня ждёт сегодня?",
-    "Стоит ли мне сегодня соглашаться на новое предложение?",
-    "Почему я сейчас чувствую, что не двигаюсь вперёд?"
-]
-
-
-for question in questions:
-    print("\n" + "=" * 60)
-    print(f"ВОПРОС: {question}")
-    print("=" * 60)
-
-    result = interpret_tarot(
-        question=question,
-        spread_name="Одна карта",
-        spread=spread
-    )
-
-    print(result)
+print(response.choices[0].message.content)

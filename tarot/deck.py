@@ -86,6 +86,22 @@ def get_card_image(card: dict) -> Path:
 
     return image_path
 
+def _apply_orientation(
+    card: dict,
+    reversed_cards: bool
+) -> None:
+
+    if reversed_cards:
+        card["reversed"] = random.choice([True, False])
+    else:
+        card["reversed"] = False
+
+    if card["reversed"]:
+        card["meaning"] = card["reversed_meaning"]
+    else:
+        card["meaning"] = card["upright_meaning"]
+
+
 def draw_cards(
     count: int = 3,
     reversed_cards: bool = True
@@ -101,18 +117,38 @@ def draw_cards(
     cards = random.sample(deck, count)
 
     for card in cards:
-
-        if reversed_cards:
-            card["reversed"] = random.choice([True, False])
-        else:
-            card["reversed"] = False
-
-        if card["reversed"]:
-            card["meaning"] = card["reversed_meaning"]
-        else:
-            card["meaning"] = card["upright_meaning"]
+        _apply_orientation(card, reversed_cards)
 
     return cards
+
+
+def draw_single_card(
+    exclude_names: set[str] | None = None,
+    reversed_cards: bool = True
+) -> dict:
+    """
+    Вытягивает одну дополнительную (уточняющую) карту,
+    не повторяя карты, уже лежащие в раскладе.
+    """
+
+    deck = load_deck()
+
+    if exclude_names:
+        deck = [
+            card for card in deck
+            if card["name"] not in exclude_names
+        ]
+
+    if not deck:
+        raise ValueError(
+            "Не осталось карт для уточняющего вытягивания"
+        )
+
+    card = random.choice(deck)
+
+    _apply_orientation(card, reversed_cards)
+
+    return card
 
 
 def make_spread(
