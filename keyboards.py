@@ -22,6 +22,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="📊 Дневник",
+                    callback_data="stats"
+                ),
+                InlineKeyboardButton(
                     text="⚙️ Настройки",
                     callback_data="settings"
                 )
@@ -124,21 +128,61 @@ def after_reading_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-def history_keyboard(readings) -> InlineKeyboardMarkup:
+def history_keyboard(
+    readings,
+    page: int = 0,
+    pages: int = 1,
+    start_index: int = 1
+) -> InlineKeyboardMarkup:
     buttons = []
 
-    for index, reading in enumerate(readings, start=1):
+    for offset, reading in enumerate(readings):
+        number = start_index + offset
+
         question = reading["question"]
 
-        if len(question) > 35:
-            question = question[:35] + "..."
+        if len(question) > 32:
+            question = question[:32] + "..."
+
+        # Значок показывает, что у расклада есть заметка или отметка.
+        mark = ""
+
+        if reading["resonance"] == "yes":
+            mark = "✅ "
+        elif reading["resonance"] == "no":
+            mark = "❌ "
+        elif reading["note"]:
+            mark = "📝 "
 
         buttons.append([
             InlineKeyboardButton(
-                text=f"🔮 #{index} {question}",
+                text=f"{mark}#{number} {question}",
                 callback_data=f"history_reading:{reading['id']}"
             )
         ])
+
+    # Листалка: страница 0 — самые свежие расклады.
+    if pages > 1:
+        navigation = []
+
+        if page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    text="← Новее",
+                    callback_data=f"history_page:{page - 1}"
+                )
+            )
+
+        if page < pages - 1:
+            navigation.append(
+                InlineKeyboardButton(
+                    text="Раньше →",
+                    callback_data=f"history_page:{page + 1}"
+                )
+            )
+
+        if navigation:
+            buttons.append(navigation)
 
     buttons.append([
         InlineKeyboardButton(
@@ -157,18 +201,103 @@ def history_keyboard(readings) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def reading_keyboard() -> InlineKeyboardMarkup:
+def reading_keyboard(
+    reading_id: int | None = None,
+    note: str | None = None,
+    resonance: str | None = None
+) -> InlineKeyboardMarkup:
+    """
+    Клавиатура под раскладом из истории. Если передан reading_id,
+    добавляются кнопки дневника: заметка и отметка «отозвалось».
+    """
+
+    buttons = []
+
+    if reading_id is not None:
+        buttons.append([
+            InlineKeyboardButton(
+                text=(
+                    "📝 Изменить заметку"
+                    if note
+                    else "📝 Добавить заметку"
+                ),
+                callback_data=f"note:{reading_id}"
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=(
+                    "✅ Отозвалось"
+                    if resonance == "yes"
+                    else "☑️ Отозвалось"
+                ),
+                callback_data=(
+                    f"resonance:{reading_id}:clear"
+                    if resonance == "yes"
+                    else f"resonance:{reading_id}:yes"
+                )
+            ),
+            InlineKeyboardButton(
+                text=(
+                    "❌ Мимо"
+                    if resonance == "no"
+                    else "⬜️ Мимо"
+                ),
+                callback_data=(
+                    f"resonance:{reading_id}:clear"
+                    if resonance == "no"
+                    else f"resonance:{reading_id}:no"
+                )
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="← История",
+            callback_data="history"
+        )
+    ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="🔮 Новый расклад",
+            callback_data="new_reading"
+        ),
+        InlineKeyboardButton(
+            text="⌂ Меню",
+            callback_data="main_menu"
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def note_cancel_keyboard(reading_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← История",
-                    callback_data="history"
+                    text="🗑 Удалить заметку",
+                    callback_data=f"note_delete:{reading_id}"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🔮 Новый расклад",
+                    text="← Отмена",
+                    callback_data=f"history_reading:{reading_id}"
+                )
+            ]
+        ]
+    )
+
+
+def card_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔮 Сделать расклад",
                     callback_data="new_reading"
                 ),
                 InlineKeyboardButton(

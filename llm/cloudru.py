@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 
@@ -22,6 +23,8 @@ RETRYABLE_ERRORS = (
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 CLOUD_API_KEY = os.getenv("CLOUD_API_KEY")
 
 if not CLOUD_API_KEY:
@@ -29,6 +32,8 @@ if not CLOUD_API_KEY:
         "CLOUD_API_KEY не найден в .env"
     )
 
+
+MAX_HISTORY_TURNS = 3
 
 client = OpenAI(
     api_key=CLOUD_API_KEY,
@@ -345,6 +350,36 @@ def _format_cards_text(spread: list[dict]) -> str:
     return "".join(parts)
 
 
+def trim_truncated(text: str) -> str:
+    """
+    Ответ упёрся в лимит токенов: убираем недописанный хвост,
+    чтобы текст не обрывался на полуслове.
+    """
+
+    text = text.rstrip()
+
+    paragraph_end = text.rfind("\n\n")
+
+    if paragraph_end > len(text) * 0.6:
+        text = text[:paragraph_end]
+    else:
+        sentence_end = max(
+            text.rfind(". "),
+            text.rfind("! "),
+            text.rfind("? "),
+            text.rfind(".\n")
+        )
+
+        if sentence_end > len(text) * 0.6:
+            text = text[:sentence_end + 1]
+
+    return (
+        text.rstrip()
+        + "\n\n(Интерпретация получилась длиннее лимита "
+        "и была сокращена.)"
+    )
+
+
 def _call_llm(
     system_prompt: str,
     prompt: str,
@@ -379,10 +414,13 @@ def _call_llm(
 
             wait_time = 2 ** attempt
 
-            print(
-                f"Cloud.ru временно недоступен ({error}). "
-                f"Повтор через {wait_time} сек. "
-                f"Попытка {attempt + 1}/{max_retries}"
+            logger.warning(
+                "Cloud.ru временно недоступен (%s). "
+                "Повтор через %s сек. Попытка %s/%s",
+                error,
+                wait_time,
+                attempt + 1,
+                max_retries
             )
 
             time.sleep(wait_time)
@@ -397,7 +435,12 @@ def _call_llm(
     finish_reason = response.choices[0].finish_reason
 
     if finish_reason == "length":
-        print("WARNING: LLM response was truncated")
+        logger.warning(
+            "Ответ LLM обрезан по max_tokens (%s)",
+            max_tokens
+        )
+
+        result = trim_truncated(result)
 
     return result
 
@@ -509,15 +552,19 @@ def answer_followup(
     cards_text = _format_cards_text(spread)
     spread_title = SPREADS[spread_name]["name"]
 
+    # В промпт уходят только последние пары: иначе к пятому-шестому
+    # вопросу запрос разрастается на всю переписку.
+    recent_history = history[-MAX_HISTORY_TURNS:]
+
     history_text = "\n".join(
         f"Уточняющий вопрос: {turn['question']}\n"
         f"Ответ: {turn['answer']}\n"
-        for turn in history
+        for turn in recent_history
     )
 
     history_block = (
         f"\nПредыдущие уточняющие вопросы и ответы:\n{history_text}"
-        if history
+        if recent_history
         else ""
     )
 

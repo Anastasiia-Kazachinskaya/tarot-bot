@@ -622,9 +622,17 @@ def render_spread(
         # Центральный крест занимает 3 × 3 позиции.
         # -------------------------------------------------
 
+        # Карта №2 лежит горизонтально и шире обычной. Если оставить
+        # обычный зазор, она заходит под карты №4 и №6 и обрезается,
+        # поэтому в среднем ряду зазор больше.
+        side_gap = max(
+            CARD_GAP,
+            (CARD_HEIGHT - CARD_WIDTH) // 2 + 15
+        )
+
         cross_width = (
             CARD_WIDTH * 3
-            + CARD_GAP * 2
+            + side_gap * 2
         )
 
         cross_height = (
@@ -682,7 +690,7 @@ def render_spread(
         center_x = (
             PADDING
             + CARD_WIDTH
-            + CARD_GAP
+            + side_gap
         )
 
         center_y = (
@@ -700,41 +708,6 @@ def render_spread(
             (
                 center_x,
                 center_y
-            )
-        )
-
-        # -------------------------------------------------
-        # №2 — Что препятствует / пересекает ситуацию
-        #
-        # Карта лежит горизонтально поверх №1.
-        # -------------------------------------------------
-
-        cross_card = cards[1].rotate(
-            90,
-            expand=True
-        )
-
-        cross_x = (
-            center_x
-            + (
-                CARD_WIDTH
-                - cross_card.width
-            ) // 2
-        )
-
-        cross_y = (
-            center_y
-            + (
-                CARD_HEIGHT
-                - cross_card.height
-            ) // 2
-        )
-
-        canvas.paste(
-            cross_card,
-            (
-                cross_x,
-                cross_y
             )
         )
 
@@ -799,8 +772,44 @@ def render_spread(
             (
                 center_x
                 + CARD_WIDTH
-                + CARD_GAP,
+                + side_gap,
                 center_y
+            )
+        )
+
+        # -------------------------------------------------
+        # №2 — Что препятствует / пересекает ситуацию
+        #
+        # Карта лежит горизонтально поверх №1. Кладём её после
+        # №4 и №6, чтобы её края не оказались перекрыты ими.
+        # -------------------------------------------------
+
+        cross_card = cards[1].rotate(
+            90,
+            expand=True
+        )
+
+        cross_x = (
+            center_x
+            + (
+                CARD_WIDTH
+                - cross_card.width
+            ) // 2
+        )
+
+        cross_y = (
+            center_y
+            + (
+                CARD_HEIGHT
+                - cross_card.height
+            ) // 2
+        )
+
+        canvas.paste(
+            cross_card,
+            (
+                cross_x,
+                cross_y
             )
         )
 
@@ -928,7 +937,7 @@ def render_spread(
                 y = card_5_y
 
             elif index == 6:
-                x = center_x + CARD_WIDTH + CARD_GAP
+                x = center_x + CARD_WIDTH + side_gap
                 y = center_y
 
             elif index >= 7:

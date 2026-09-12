@@ -7,3 +7,4 @@ class TarotStates(StatesGroup):
     waiting_for_question = State()
     processing = State()
     follow_up = State()
+    waiting_for_note = State()

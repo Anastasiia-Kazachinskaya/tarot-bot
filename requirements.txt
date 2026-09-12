@@ -1,5 +1,5 @@
-aiogram
-python-dotenv
-google-genai
-openai
-Pillow
+aiogram==3.31.0
+python-dotenv==1.2.3
+google-genai==2.23.0
+openai==3.13.0
+Pillow==12.3.0

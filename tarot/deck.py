@@ -177,3 +177,173 @@ def make_spread(
         })
 
     return result
+
+
+# =================================================
+# Поиск карты по названию (команда /card)
+# =================================================
+
+SUIT_NAMES = {
+    "wands": "Жезлов",
+    "cups": "Кубков",
+    "swords": "Мечей",
+    "pentacles": "Пентаклей",
+}
+
+# Как масть могут написать в запросе.
+SUIT_ALIASES = {
+    "жезл": "wands",
+    "жезлы": "wands",
+    "жезлов": "wands",
+    "посох": "wands",
+    "посохи": "wands",
+    "посохов": "wands",
+    "кубок": "cups",
+    "кубки": "cups",
+    "кубков": "cups",
+    "чаша": "cups",
+    "чаши": "cups",
+    "чаш": "cups",
+    "меч": "swords",
+    "мечи": "swords",
+    "мечей": "swords",
+    "пентакль": "pentacles",
+    "пентакли": "pentacles",
+    "пентаклей": "pentacles",
+    "монета": "pentacles",
+    "монеты": "pentacles",
+    "монет": "pentacles",
+    "диск": "pentacles",
+    "диски": "pentacles",
+    "дисков": "pentacles",
+}
+
+# Как может быть записан ранг: цифрой или другим словом.
+RANK_ALIASES = {
+    "1": "Туз",
+    "туза": "Туз",
+    "2": "Двойка",
+    "двойки": "Двойка",
+    "двойку": "Двойка",
+    "две": "Двойка",
+    "3": "Тройка",
+    "тройки": "Тройка",
+    "тройку": "Тройка",
+    "три": "Тройка",
+    "4": "Четвёрка",
+    "четверка": "Четвёрка",
+    "четыре": "Четвёрка",
+    "5": "Пятёрка",
+    "пятерка": "Пятёрка",
+    "пять": "Пятёрка",
+    "6": "Шестёрка",
+    "шестерка": "Шестёрка",
+    "шесть": "Шестёрка",
+    "7": "Семёрка",
+    "семерка": "Семёрка",
+    "семь": "Семёрка",
+    "8": "Восьмёрка",
+    "восьмерка": "Восьмёрка",
+    "восемь": "Восьмёрка",
+    "9": "Девятка",
+    "девятки": "Девятка",
+    "девять": "Девятка",
+    "10": "Десятка",
+    "десятки": "Десятка",
+    "десять": "Десятка",
+    "11": "Паж",
+    "пажа": "Паж",
+    "валет": "Паж",
+    "12": "Рыцарь",
+    "рыцаря": "Рыцарь",
+    "конь": "Рыцарь",
+    "13": "Королева",
+    "королевы": "Королева",
+    "дама": "Королева",
+    "14": "Король",
+    "короля": "Король",
+}
+
+
+def normalize(text: str) -> str:
+    """
+    Приводит запрос к сравнимому виду: нижний регистр, «ё» как «е»,
+    без лишних пробелов и знаков препинания.
+    """
+
+    text = text.lower().replace("ё", "е")
+
+    text = "".join(
+        char if char.isalnum() else " "
+        for char in text
+    )
+
+    return " ".join(text.split())
+
+
+def _normalized_query(query: str) -> str:
+    """
+    Переводит «10 мечей», «туз чаш», «дама монет» в нормализованное
+    название из колоды: «десятка мечей», «туз кубков» и так далее.
+    """
+
+    words = normalize(query).split()
+
+    converted = []
+
+    for word in words:
+        if word in RANK_ALIASES:
+            converted.append(normalize(RANK_ALIASES[word]))
+            continue
+
+        if word in SUIT_ALIASES:
+            suit = SUIT_ALIASES[word]
+            converted.append(normalize(SUIT_NAMES[suit]))
+            continue
+
+        converted.append(word)
+
+    return " ".join(converted)
+
+
+def find_cards(query: str) -> list[dict]:
+    """
+    Ищет карту по названию.
+
+    Возвращает список совпадений: пустой — не нашлось, один элемент —
+    точное попадание, несколько — запрос слишком общий («мечей»),
+    и пользователю нужно показать варианты.
+    """
+
+    normalized = _normalized_query(query)
+
+    if not normalized:
+        return []
+
+    deck = load_deck()
+
+    names = {
+        normalize(card["name"]): card
+        for card in deck
+    }
+
+    if normalized in names:
+        return [names[normalized]]
+
+    # Совпадение по всем словам запроса в любом порядке:
+    # «мечей туз» тоже находится.
+    words = normalized.split()
+
+    matches = [
+        card for name, card in names.items()
+        if all(word in name for word in words)
+    ]
+
+    if matches:
+        return matches
+
+    # Последняя попытка: запрос — начало названия («отшель»).
+    return [
+        card for name, card in names.items()
+        if name.startswith(normalized)
+    ]
