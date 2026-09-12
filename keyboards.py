@@ -20,6 +20,12 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                     callback_data="about"
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Настройки",
+                    callback_data="settings"
+                )
+            ],
         ]
     )
 
@@ -167,6 +173,39 @@ def reading_keyboard() -> InlineKeyboardMarkup:
                 ),
                 InlineKeyboardButton(
                     text="⌂ Меню",
+                    callback_data="main_menu"
+                )
+            ]
+        ]
+    )
+
+def settings_keyboard(current: bool | None) -> InlineKeyboardMarkup:
+    def mark(value):
+        return " ✅" if current == value else ""
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🔄 Всегда да{mark(True)}",
+                    callback_data="settings:reversed:yes"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"➡️ Всегда нет{mark(False)}",
+                    callback_data="settings:reversed:no"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"❓ Спрашивать каждый раз{mark(None)}",
+                    callback_data="settings:reversed:ask"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⌂ Главное меню",
                     callback_data="main_menu"
                 )
             ]

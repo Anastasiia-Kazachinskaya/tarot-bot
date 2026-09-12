@@ -20,7 +20,8 @@ from keyboards import (
     after_reading_keyboard,
     history_keyboard,
     reading_keyboard,
-    llm_error_keyboard
+    llm_error_keyboard,
+    settings_keyboard
 )
 
 from states import TarotStates
@@ -37,7 +38,9 @@ from database import (
     init_database,
     save_reading,
     get_user_readings,
-    get_reading
+    get_reading,
+    get_reversed_cards_preference,
+    set_reversed_cards_preference
 )
 
 load_dotenv()
@@ -111,6 +114,23 @@ def get_spread_setup_text(spread_name: str) -> str:
         "<b>Использовать перевёрнутые карты?</b>"
     )
 
+
+def describe_reversed_preference(value: bool | None) -> str:
+    if value is None:
+        return "спрашивать каждый раз"
+
+    return "да" if value else "нет"
+
+
+def get_settings_text(current: bool | None) -> str:
+    return (
+        "⚙️ <b>НАСТРОЙКИ</b>\n\n"
+        "Использовать перевёрнутые карты в новых раскладах?\n\n"
+        f"Текущий режим: <b>{describe_reversed_preference(current)}</b>.\n\n"
+        "Если выбрать «Всегда да/нет», в следующий раз "
+        "спрашивать не буду — можно поменять здесь в любой момент."
+    )
+
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -141,6 +161,33 @@ async def main_menu(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+def get_question_prompt_text(
+    spread_name: str,
+    saved_preference: bool | None = None
+) -> str:
+    spread_title = html.escape(
+        SPREADS[spread_name]["name"].upper()
+    )
+
+    note = (
+        f"Использую сохранённую настройку: перевёрнутые "
+        f"карты — {describe_reversed_preference(saved_preference)}. "
+        "Изменить можно в ⚙️ Настройках.\n\n"
+        if saved_preference is not None
+        else ""
+    )
+
+    return (
+        f"🔮 <b>{spread_title}</b>\n\n"
+        f"{note}"
+        "Теперь задай свой вопрос.\n\n"
+        "Чем конкретнее ситуация, тем полезнее "
+        "получится интерпретация.\n\n"
+        "<b>Например:</b>\n"
+        "«Какой подход к поиску работы сейчас "
+        "будет для меня наиболее продуктивным?»"
+    )
+
 @dp.callback_query(F.data.startswith("spread:"))
 async def choose_spread(callback: CallbackQuery, state: FSMContext):
     spread_name = callback.data.split(":")[1]
@@ -151,13 +198,28 @@ async def choose_spread(callback: CallbackQuery, state: FSMContext):
 
     await state.clear()
     await state.update_data(spread_name=spread_name)
-    await state.set_state(TarotStates.choosing_reversed)
 
-    await callback.message.edit_text(
-        get_spread_setup_text(spread_name),
-        parse_mode="HTML",
-        reply_markup=reversed_keyboard()
+    saved_preference = await asyncio.to_thread(
+        get_reversed_cards_preference,
+        callback.from_user.id
     )
+
+    if saved_preference is None:
+        await state.set_state(TarotStates.choosing_reversed)
+
+        await callback.message.edit_text(
+            get_spread_setup_text(spread_name),
+            parse_mode="HTML",
+            reply_markup=reversed_keyboard()
+        )
+    else:
+        await state.update_data(reversed_cards=saved_preference)
+        await state.set_state(TarotStates.waiting_for_question)
+
+        await callback.message.edit_text(
+            get_question_prompt_text(spread_name, saved_preference),
+            parse_mode="HTML"
+        )
 
     await callback.answer()
 
@@ -182,12 +244,20 @@ async def choose_reversed(
         TarotStates.waiting_for_question
     )
 
+    await asyncio.to_thread(
+        set_reversed_cards_preference,
+        callback.from_user.id,
+        use_reversed
+    )
+
     spread_title = html.escape(
         SPREADS[spread_name]["name"].upper()
     )
 
     await callback.message.edit_text(
         f"🔮 <b>{spread_title}</b>\n\n"
+        "Запомнил этот выбор — в следующий раз спрашивать "
+        "не буду (поменять можно в ⚙️ Настройках).\n\n"
         "Теперь задай свой вопрос.\n\n"
         "Чем конкретнее ситуация, тем полезнее "
         "получится интерпретация.\n\n"
@@ -198,6 +268,45 @@ async def choose_reversed(
     )
 
     await callback.answer()
+
+@dp.callback_query(F.data == "settings")
+async def settings_menu(callback: CallbackQuery):
+    current = await asyncio.to_thread(
+        get_reversed_cards_preference,
+        callback.from_user.id
+    )
+
+    await callback.message.edit_text(
+        get_settings_text(current),
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(current)
+    )
+
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("settings:reversed:"))
+async def update_reversed_setting(callback: CallbackQuery):
+    choice = callback.data.split(":")[2]
+
+    value = {
+        "yes": True,
+        "no": False,
+        "ask": None
+    }.get(choice)
+
+    await asyncio.to_thread(
+        set_reversed_cards_preference,
+        callback.from_user.id,
+        value
+    )
+
+    await callback.message.edit_text(
+        get_settings_text(value),
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(value)
+    )
+
+    await callback.answer("Сохранено")
 
 
 def format_spread(spread: list[dict]) -> str:

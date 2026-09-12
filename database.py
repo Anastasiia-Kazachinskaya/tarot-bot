@@ -29,6 +29,69 @@ def init_database() -> None:
             """
         )
 
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                reversed_cards INTEGER
+            )
+            """
+        )
+
+        connection.commit()
+
+
+def get_reversed_cards_preference(user_id: int) -> bool | None:
+    """
+    Возвращает сохранённую настройку «перевёрнутые карты»:
+    True/False — запомненный выбор, None — настройка не задана
+    и пользователя нужно спросить.
+    """
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            SELECT reversed_cards
+            FROM user_settings
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        )
+
+        row = cursor.fetchone()
+
+    if row is None or row["reversed_cards"] is None:
+        return None
+
+    return bool(row["reversed_cards"])
+
+
+def set_reversed_cards_preference(
+    user_id: int,
+    reversed_cards: bool | None
+) -> None:
+    """
+    Сохраняет настройку «перевёрнутые карты» для пользователя.
+    None означает «спрашивать каждый раз».
+    """
+
+    value = (
+        None
+        if reversed_cards is None
+        else int(reversed_cards)
+    )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO user_settings (user_id, reversed_cards)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                reversed_cards = excluded.reversed_cards
+            """,
+            (user_id, value)
+        )
+
         connection.commit()
 
 
