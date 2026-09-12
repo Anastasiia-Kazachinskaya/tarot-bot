@@ -44,6 +44,57 @@ def get_font(size: int, bold: bool = False):
         # Старые версии Pillow не поддерживают size у load_default.
         return ImageFont.load_default()
 
+def draw_card_number(
+    draw: ImageDraw.ImageDraw,
+    number: int,
+    x: int,
+    y: int,
+    size: int = 36
+):
+    """
+    Рисует номер карты в небольшом белом круге
+    с чёрной обводкой.
+    """
+
+    center_x = x + size // 2
+    center_y = y + size // 2
+    radius = size // 2
+
+    draw.ellipse(
+        (
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius
+        ),
+        fill="white",
+        outline="black",
+        width=2
+    )
+
+    font = get_font(20, bold=True)
+
+    text = str(number)
+
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font
+    )
+
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
+    draw.text(
+        (
+            center_x - text_width // 2,
+            center_y - text_height // 2 - 2
+        ),
+        text,
+        fill="black",
+        font=font
+    )
+
 def render_spread(
     spread: list[dict],
     spread_name: str
@@ -815,6 +866,232 @@ def render_spread(
         raise ValueError(
             f"Неподдерживаемый расклад: {spread_name}"
         )
+
+        # =================================================
+    # НОМЕРА ПОЗИЦИЙ
+    # =================================================
+
+    draw = ImageDraw.Draw(canvas)
+
+    for index, item in enumerate(spread, start=1):
+        card = item["card"]
+
+        # Для обычных карт номер находится
+        # в левом верхнем углу карты.
+        #
+        # Для Кельтского креста №2 имеет отдельные
+        # координаты, потому что карта повернута.
+        if spread_name == "celtic_cross" and index == 2:
+            cross_card = cards[1].rotate(
+                90,
+                expand=True
+            )
+
+            cross_x = (
+                center_x
+                + (
+                    CARD_WIDTH
+                    - cross_card.width
+                ) // 2
+            )
+
+            cross_y = (
+                center_y
+                + (
+                    CARD_HEIGHT
+                    - cross_card.height
+                ) // 2
+            )
+
+            draw_card_number(
+                draw,
+                index,
+                cross_x + 8,
+                cross_y + 8
+            )
+
+        elif spread_name == "celtic_cross":
+            if index == 1:
+                x = center_x
+                y = center_y
+
+            elif index == 3:
+                x = center_x
+                y = PADDING
+
+            elif index == 4:
+                x = PADDING
+                y = center_y
+
+            elif index == 5:
+                x = center_x
+                y = card_5_y
+
+            elif index == 6:
+                x = center_x + CARD_WIDTH + CARD_GAP
+                y = center_y
+
+            elif index >= 7:
+                column_index = index - 7
+
+                resized_width = ImageOps.contain(
+                    cards[column_index + 6],
+                    (column_card_width, column_card_height)
+                ).width
+
+                x = (
+                    column_x
+                    + (
+                        column_card_width
+                        - resized_width
+                    ) // 2
+                )
+
+                y = (
+                    column_start_y
+                    + column_index * (
+                        column_card_height
+                        + column_gap
+                    )
+                )
+
+            draw_card_number(
+                draw,
+                index,
+                x + 8,
+                y + 8
+            )
+
+        elif spread_name == "choice":
+            # Для choice используем фактическое
+            # расположение каждой карты.
+
+            if index == 1:
+                x = situation_x
+                y = situation_y
+
+            elif index == 2:
+                x = left_x
+                y = potential_y
+
+            elif index == 3:
+                x = left_x
+                y = risk_y
+
+            elif index == 4:
+                x = right_x
+                y = potential_y
+
+            elif index == 5:
+                x = right_x
+                y = risk_y
+
+            draw_card_number(
+                draw,
+                index,
+                x + 8,
+                y + 8
+            )
+
+        elif spread_name == "relationship":
+            if index <= 3:
+                x = PADDING + (index - 1) * (
+                    CARD_WIDTH + CARD_GAP
+                )
+                y = PADDING
+
+            else:
+                bottom_width = (
+                    CARD_WIDTH * 2
+                    + CARD_GAP
+                )
+
+                bottom_start_x = (
+                    width - bottom_width
+                ) // 2
+
+                x = bottom_start_x + (index - 4) * (
+                    CARD_WIDTH + CARD_GAP
+                )
+
+                y = (
+                    PADDING
+                    + CARD_HEIGHT
+                    + CARD_GAP
+                )
+
+            draw_card_number(
+                draw,
+                index,
+                x + 8,
+                y + 8
+            )
+
+        elif count == 3:
+            x = (
+                PADDING
+                + (index - 1) * (
+                    CARD_WIDTH + CARD_GAP
+                )
+            )
+            y = PADDING
+
+            draw_card_number(
+                draw,
+                index,
+                x + 8,
+                y + 8
+            )
+
+        elif count == 7:
+            if index <= 4:
+                x = (
+                    PADDING
+                    + (index - 1) * (
+                        CARD_WIDTH + CARD_GAP
+                    )
+                )
+                y = PADDING
+
+            else:
+                bottom_count = 3
+
+                bottom_width = (
+                    CARD_WIDTH * bottom_count
+                    + CARD_GAP * (bottom_count - 1)
+                )
+
+                bottom_start_x = (
+                    width - bottom_width
+                ) // 2
+
+                x = (
+                    bottom_start_x
+                    + (index - 5) * (
+                        CARD_WIDTH + CARD_GAP
+                    )
+                )
+
+                y = (
+                    PADDING
+                    + CARD_HEIGHT
+                    + CARD_GAP
+                )
+
+            draw_card_number(
+                draw,
+                index,
+                x + 8,
+                y + 8
+            )
+
+        elif count == 1:
+            draw_card_number(
+                draw,
+                index,
+                PADDING + 8,
+                PADDING + 8
+            )
 
     return _save_render(canvas)
 
