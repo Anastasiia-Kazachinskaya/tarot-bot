@@ -5,6 +5,8 @@ __pycache__/
 venv/
 .idea/
 .vscode/
-tarot.db
+/data/
 .DS_Store
-tarot/rendered/
+bot/tarot/rendered/
+exports/
+docker-compose.override.yml

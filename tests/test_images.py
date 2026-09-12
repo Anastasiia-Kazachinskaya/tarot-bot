@@ -1,4 +1,4 @@
-from tarot.deck import load_deck, get_card_image
+from bot.tarot.deck import load_deck, get_card_image
 
 
 deck = load_deck()

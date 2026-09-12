@@ -1,5 +1,5 @@
-from tarot.deck import make_spread
-from tarot.renderer import render_spread
+from bot.tarot.deck import make_spread
+from bot.tarot.renderer import render_spread
 
 
 spread = make_spread(

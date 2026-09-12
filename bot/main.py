@@ -22,7 +22,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
-from keyboards import (
+from .keyboards import (
     main_menu_keyboard,
     card_keyboard,
     note_cancel_keyboard,
@@ -35,17 +35,17 @@ from keyboards import (
     settings_keyboard
 )
 
-from states import TarotStates
-from tarot.deck import make_spread, draw_single_card, find_cards
-from tarot.renderer import render_spread, render_single_card
-from llm.cloudru import (
+from .states import TarotStates
+from .tarot.deck import make_spread, draw_single_card, find_cards
+from .tarot.renderer import render_spread, render_single_card
+from .llm.cloudru import (
     interpret_tarot,
     answer_followup,
     interpret_clarifying_card
 )
-from tarot.spreads import SPREADS
+from .tarot.spreads import SPREADS
 
-from database import (
+from .database import (
     init_database,
     save_reading,
     get_user_readings,
@@ -2315,8 +2315,4 @@ async def handle_error(event: ErrorEvent):
 async def main():
     init_database()
     await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 

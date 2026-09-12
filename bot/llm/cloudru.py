@@ -10,7 +10,7 @@ from openai import (
     InternalServerError,
     RateLimitError
 )
-from tarot.spreads import SPREADS
+from ..tarot.spreads import SPREADS
 
 
 RETRYABLE_ERRORS = (

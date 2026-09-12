@@ -1,13 +1,19 @@
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 
-DATABASE_FILE = Path(__file__).parent / "tarot.db"
+DATABASE_FILE = Path(
+    os.getenv("DATABASE_PATH")
+    or Path(__file__).resolve().parent.parent / "data" / "tarot.db"
+)
 
 
 def get_connection() -> sqlite3.Connection:
+    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     connection = sqlite3.connect(DATABASE_FILE)
 
     # Явно фиксируем UTF-8 на обеих сторонах: text_factory отвечает
