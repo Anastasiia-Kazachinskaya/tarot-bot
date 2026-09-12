@@ -9,6 +9,15 @@ DATABASE_FILE = Path(__file__).parent / "tarot.db"
 
 def get_connection() -> sqlite3.Connection:
     connection = sqlite3.connect(DATABASE_FILE)
+
+    # Явно фиксируем UTF-8 на обеих сторонах: text_factory отвечает
+    # за то, как Python декодирует TEXT-столбцы обратно в str, а
+    # PRAGMA encoding — в какой кодировке SQLite хранит их на диске.
+    # Без этого поведение зависит от дефолтов Python/SQLite в
+    # конкретной сборке, а не гарантировано явно.
+    connection.text_factory = str
+    connection.execute("PRAGMA encoding = 'UTF-8'")
+
     connection.row_factory = sqlite3.Row
     return connection
 
