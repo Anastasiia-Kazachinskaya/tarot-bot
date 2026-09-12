@@ -554,6 +554,16 @@ async def new_command(message: Message, state: FSMContext):
         reply_markup=spread_keyboard()
     )
 
+@dp.message(Command("history"))
+async def history_command(message: Message):
+    text, keyboard = await build_history_response(message.from_user.id)
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
 @dp.callback_query(F.data == "new_reading")
 async def new_reading(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1137,32 +1147,42 @@ async def draw_clarifying_card_callback(
             )
         )
 
+async def build_history_response(user_id: int):
+    """
+    Достаёт историю раскладов пользователя и собирает текст+клавиатуру
+    для неё. Общая логика для кнопки «История» и команды /history.
+    """
+
+    readings = await asyncio.to_thread(
+        get_user_readings,
+        user_id=user_id
+    )
+
+    if not readings:
+        return (
+            "📖 <b>История пока пуста.</b>\n\n"
+            "Сделай первый расклад, и он появится здесь.",
+            history_keyboard([])
+        )
+
+    return (
+        "📖 <b>История раскладов</b>\n\n"
+        "Выбери расклад, чтобы открыть его:",
+        history_keyboard(readings)
+    )
+
 @dp.callback_query(F.data == "history")
 async def show_history(
     callback: CallbackQuery
 ):
-    readings = await asyncio.to_thread(
-        get_user_readings,
-        user_id=callback.from_user.id
-    )
-
-    if not readings:
-        await callback.message.edit_text(
-            "📖 <b>История пока пуста.</b>\n\n"
-            "Сделай первый расклад, и он появится здесь.",
-            parse_mode="HTML",
-            reply_markup=history_keyboard([])
-        )
-
-        await callback.answer()
-        return
+    text, keyboard = await build_history_response(callback.from_user.id)
 
     await callback.message.edit_text(
-            "📖 <b>История раскладов</b>\n\n"
-            "Выбери расклад, чтобы открыть его:",
-            parse_mode="HTML",
-            reply_markup=history_keyboard(readings)
-        )
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("history_reading:"))
