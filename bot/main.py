@@ -54,6 +54,8 @@ from .database import (
     get_reversed_cards_preference,
     set_reversed_cards_preference,
     remember_reversed_cards_choice,
+    get_user_gender,
+    set_user_gender,
     set_reading_note,
     set_reading_resonance,
     get_diary_stats,
@@ -415,13 +417,26 @@ def describe_reversed_preference(value: bool | None) -> str:
     return "да" if value else "нет"
 
 
-def get_settings_text(current: bool | None) -> str:
+def describe_gender(gender: str | None) -> str:
+    return {
+        "f": "в женском роде",
+        "m": "в мужском роде",
+    }.get(gender, "без рода")
+
+
+def get_settings_text(
+    current: bool | None,
+    gender: str | None = None
+) -> str:
     return (
         "⚙️ <b>НАСТРОЙКИ</b>\n\n"
         "Использовать перевёрнутые карты в новых раскладах?\n\n"
         f"Текущий режим: <b>{describe_reversed_preference(current)}</b>.\n\n"
         "Если выбрать «Всегда да/нет», в следующий раз "
-        "спрашивать не буду — можно поменять здесь в любой момент."
+        "спрашивать не буду — можно поменять здесь в любой момент.\n\n"
+        "──────────────\n\n"
+        "Как обращаться к тебе в интерпретациях?\n\n"
+        f"Сейчас: <b>{describe_gender(gender)}</b>."
     )
 
 @dp.message(CommandStart())
@@ -599,10 +614,15 @@ async def settings_menu(callback: CallbackQuery):
         callback.from_user.id
     )
 
+    gender = await asyncio.to_thread(
+        get_user_gender,
+        callback.from_user.id
+    )
+
     await safe_edit(callback,
-        get_settings_text(current),
+        get_settings_text(current, gender),
         parse_mode="HTML",
-        reply_markup=settings_keyboard(current)
+        reply_markup=settings_keyboard(current, gender)
     )
 
     await callback.answer()
@@ -636,10 +656,54 @@ async def update_reversed_setting(callback: CallbackQuery):
         value
     )
 
+    gender = await asyncio.to_thread(
+        get_user_gender,
+        callback.from_user.id
+    )
+
     await safe_edit(callback,
-        get_settings_text(value),
+        get_settings_text(value, gender),
         parse_mode="HTML",
-        reply_markup=settings_keyboard(value)
+        reply_markup=settings_keyboard(value, gender)
+    )
+
+    await callback.answer("Сохранено")
+
+
+@dp.callback_query(F.data.startswith("settings:gender:"))
+async def update_gender_setting(callback: CallbackQuery):
+    choice = callback.data.split(":")[2]
+
+    if choice not in ("f", "m", "none"):
+        await callback.answer("Неизвестная настройка.")
+        return
+
+    value = None if choice == "none" else choice
+
+    current_gender = await asyncio.to_thread(
+        get_user_gender,
+        callback.from_user.id
+    )
+
+    if current_gender == value:
+        await callback.answer("Уже выбрано")
+        return
+
+    await asyncio.to_thread(
+        set_user_gender,
+        callback.from_user.id,
+        value
+    )
+
+    reversed_pref = await asyncio.to_thread(
+        get_reversed_cards_preference,
+        callback.from_user.id
+    )
+
+    await safe_edit(callback,
+        get_settings_text(reversed_pref, value),
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(reversed_pref, value)
     )
 
     await callback.answer("Сохранено")
@@ -1421,12 +1485,18 @@ async def get_question(
     try:
         llm_start = time.perf_counter()
 
+        gender = await asyncio.to_thread(
+            get_user_gender,
+            message.from_user.id
+        )
+
         async with typing(message.chat.id):
             interpretation = await asyncio.to_thread(
                 interpret_tarot,
                 question=question,
                 spread_name=spread_name,
-                spread=spread
+                spread=spread,
+                gender=gender
             )
 
         llm_time = time.perf_counter() - llm_start
@@ -1600,12 +1670,18 @@ async def retry_interpretation(
             parse_mode="HTML"
         )
 
+        gender = await asyncio.to_thread(
+            get_user_gender,
+            callback.from_user.id
+        )
+
         async with typing(chat_id_of(callback)):
             interpretation = await asyncio.to_thread(
                 interpret_tarot,
                 question=question,
                 spread_name=spread_name,
-                spread=spread
+                spread=spread,
+                gender=gender
             )
 
         llm_time = time.perf_counter() - llm_start
@@ -1718,6 +1794,11 @@ async def get_followup(
         return
 
     try:
+        gender = await asyncio.to_thread(
+            get_user_gender,
+            message.from_user.id
+        )
+
         async with typing(message.chat.id):
             answer = await asyncio.to_thread(
                 answer_followup,
@@ -1726,7 +1807,8 @@ async def get_followup(
                 spread=spread,
                 base_interpretation=base_interpretation,
                 history=history,
-                follow_up_question=follow_up_question
+                follow_up_question=follow_up_question,
+                gender=gender
             )
 
     except Exception as error:
@@ -1858,6 +1940,11 @@ async def draw_clarifying_card_callback(
         finally:
             image_path.unlink(missing_ok=True)
 
+        gender = await asyncio.to_thread(
+            get_user_gender,
+            callback.from_user.id
+        )
+
         async with typing(chat_id_of(callback)):
             interpretation = await asyncio.to_thread(
                 interpret_clarifying_card,
@@ -1865,7 +1952,8 @@ async def draw_clarifying_card_callback(
                 spread_name,
                 base_spread,
                 base_interpretation,
-                new_item
+                new_item,
+                gender=gender
             )
 
     except Exception as error:

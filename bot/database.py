@@ -53,6 +53,19 @@ def init_database() -> None:
             """
         )
 
+        # Как обращаться к пользователю: 'f' — в женском роде,
+        # 'm' — в мужском. Отдельная таблица, чтобы не смешивать
+        # с user_settings, где NULL в reversed_cards значит
+        # «спрашивать каждый раз».
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_profile (
+                user_id INTEGER PRIMARY KEY,
+                gender TEXT
+            )
+            """
+        )
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -182,6 +195,46 @@ def set_reversed_cards_preference(
                 reversed_cards = excluded.reversed_cards
             """,
             (user_id, value)
+        )
+
+        connection.commit()
+
+
+def get_user_gender(user_id: int) -> str | None:
+    """
+    'f' — обращаться в женском роде, 'm' — в мужском,
+    None — не указано (модель пишет без рода).
+    """
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT gender
+            FROM user_profile
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        ).fetchone()
+
+    if row is None or row["gender"] not in ("f", "m"):
+        return None
+
+    return row["gender"]
+
+
+def set_user_gender(user_id: int, gender: str | None) -> None:
+    if gender not in ("f", "m", None):
+        raise ValueError(f"Неизвестное значение gender: {gender!r}")
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO user_profile (user_id, gender)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                gender = excluded.gender
+            """,
+            (user_id, gender)
         )
 
         connection.commit()

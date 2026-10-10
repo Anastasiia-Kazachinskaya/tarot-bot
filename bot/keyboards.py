@@ -308,9 +308,15 @@ def card_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-def settings_keyboard(current: bool | None) -> InlineKeyboardMarkup:
+def settings_keyboard(
+    current: bool | None,
+    gender: str | None = None
+) -> InlineKeyboardMarkup:
     def mark(value):
         return " ✅" if current == value else ""
+
+    def mark_gender(value):
+        return " ✅" if gender == value else ""
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -330,6 +336,20 @@ def settings_keyboard(current: bool | None) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=f"❓ Спрашивать каждый раз{mark(None)}",
                     callback_data="settings:reversed:ask"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"Ж{mark_gender('f')}",
+                    callback_data="settings:gender:f"
+                ),
+                InlineKeyboardButton(
+                    text=f"М{mark_gender('m')}",
+                    callback_data="settings:gender:m"
+                ),
+                InlineKeyboardButton(
+                    text=f"Без рода{mark_gender(None)}",
+                    callback_data="settings:gender:none"
                 )
             ],
             [
