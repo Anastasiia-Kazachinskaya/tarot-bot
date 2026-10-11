@@ -10,3 +10,4 @@ venv/
 bot/tarot/rendered/
 exports/
 docker-compose.override.yml
+tests/unit/_fake.png

@@ -7,23 +7,28 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Та же версия Python, что на сервере (Ubuntu 22.04).
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
 
       - name: Check imports
-        run: python -m compileall bot scripts
+        run: python -m compileall -q bot scripts
+
+      # Сценарии бота без сети: Telegram и модель подменены.
+      - name: Tests
+        run: python -m pytest tests/unit -q
 
       - name: Build Docker image
         uses: docker/build-push-action@v6
