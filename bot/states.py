@@ -11,3 +11,5 @@ class TarotStates(StatesGroup):
     waiting_for_option_a = State()
     waiting_for_option_b = State()
     confirming_repeat = State()
+    waiting_for_live_card = State()
+    waiting_for_suggest_question = State()

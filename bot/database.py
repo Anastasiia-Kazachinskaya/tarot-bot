@@ -144,6 +144,8 @@ def init_database() -> None:
             ("checkins_enabled", "INTEGER DEFAULT 1"),
             ("daily_card_date", "TEXT"),
             ("daily_card_json", "TEXT"),
+            ("monthly_enabled", "INTEGER DEFAULT 1"),
+            ("monthly_last_sent", "TEXT"),
         ):
             if name not in profile_columns:
                 connection.execute(
@@ -288,7 +290,8 @@ def get_profile(user_id: int) -> dict:
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT gender, onboarded, daily_hour, checkins_enabled
+            SELECT gender, onboarded, daily_hour, checkins_enabled,
+                   monthly_enabled
             FROM user_profile
             WHERE user_id = ?
             """,
@@ -301,6 +304,7 @@ def get_profile(user_id: int) -> dict:
             "onboarded": False,
             "daily_hour": None,
             "checkins_enabled": True,
+            "monthly_enabled": True,
         }
 
     return {
@@ -308,6 +312,7 @@ def get_profile(user_id: int) -> dict:
         "onboarded": bool(row["onboarded"]),
         "daily_hour": row["daily_hour"],
         "checkins_enabled": row["checkins_enabled"] != 0,
+        "monthly_enabled": row["monthly_enabled"] != 0,
     }
 
 
@@ -340,6 +345,83 @@ def set_daily_hour(user_id: int, hour: int | None) -> None:
 
 def set_checkins_enabled(user_id: int, enabled: bool) -> None:
     _upsert_profile(user_id, "checkins_enabled", int(enabled))
+
+
+def set_monthly_enabled(user_id: int, enabled: bool) -> None:
+    _upsert_profile(user_id, "monthly_enabled", int(enabled))
+
+
+def mark_monthly_sent(user_id: int, key: str) -> None:
+    _upsert_profile(user_id, "monthly_last_sent", key)
+
+
+_READING_COLUMNS = """
+    id, created_at, question, spread_name, spread,
+    interpretation, note, resonance
+"""
+
+
+def get_all_readings(user_id: int) -> list[sqlite3.Row]:
+    """Вся история человека от старых к новым — для /export."""
+
+    with get_connection() as connection:
+        return connection.execute(
+            f"""
+            SELECT {_READING_COLUMNS}
+            FROM readings
+            WHERE user_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id,)
+        ).fetchall()
+
+
+def get_readings_between(
+    user_id: int,
+    start: str,
+    end: str
+) -> list[sqlite3.Row]:
+    """Расклады с start (включительно) до end (не включая), ISO-даты."""
+
+    with get_connection() as connection:
+        return connection.execute(
+            f"""
+            SELECT {_READING_COLUMNS}
+            FROM readings
+            WHERE user_id = ? AND created_at >= ? AND created_at < ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, start, end)
+        ).fetchall()
+
+
+def get_monthly_recipients(
+    start: str,
+    end: str,
+    key: str,
+    min_readings: int = 3
+) -> list[int]:
+    """
+    Кому отправить итоги месяца: за месяц было хотя бы min_readings
+    раскладов, итоги включены и за этот месяц ещё не отправлялись.
+    """
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT r.user_id
+            FROM readings r
+            LEFT JOIN user_profile p ON p.user_id = r.user_id
+            WHERE r.created_at >= ? AND r.created_at < ?
+              AND COALESCE(p.monthly_enabled, 1) = 1
+              AND COALESCE(p.monthly_last_sent, '') != ?
+            GROUP BY r.user_id
+            HAVING COUNT(*) >= ?
+            """,
+            (start, end, key, min_readings)
+        ).fetchall()
+
+    return [row["user_id"] for row in rows]
 
 
 def get_daily_card_recipients(hour: int, today: str) -> list[int]:

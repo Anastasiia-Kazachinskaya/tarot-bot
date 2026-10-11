@@ -40,9 +40,33 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def spread_keyboard() -> InlineKeyboardMarkup:
+def spread_keyboard(extras: bool = True) -> InlineKeyboardMarkup:
+    """
+    Выбор формата расклада. extras — кнопки «Подобрать по вопросу»
+    и «Своя колода»; в режиме своей колоды они не нужны.
+    """
+
+    extra_rows = (
+        [
+            [
+                InlineKeyboardButton(
+                    text="✨ Подобрать по вопросу",
+                    callback_data="suggest:start"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✋ Расклад со своей колоды",
+                    callback_data="live:start"
+                )
+            ],
+        ]
+        if extras
+        else []
+    )
+
     return InlineKeyboardMarkup(
-        inline_keyboard=[
+        inline_keyboard=extra_rows + [
             [
                 InlineKeyboardButton(
                     text="🃏 Одна карта",
@@ -106,33 +130,43 @@ def reversed_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def after_reading_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔎 Уточняющая карта",
-                    callback_data="draw_clarifying_card"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔮 Новый расклад",
-                    callback_data="new_reading"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📖 История",
-                    callback_data="history"
-                ),
-                InlineKeyboardButton(
-                    text="⌂ Главное меню",
-                    callback_data="main_menu"
-                )
-            ],
-        ]
-    )
+def after_reading_keyboard(reading_id: int | None = None) -> InlineKeyboardMarkup:
+    rows = []
+
+    if reading_id is not None:
+        rows.append([
+            InlineKeyboardButton(
+                text="📝 Записать мысль",
+                callback_data=f"note:{reading_id}"
+            )
+        ])
+
+    rows += [
+        [
+            InlineKeyboardButton(
+                text="🔎 Уточняющая карта",
+                callback_data="draw_clarifying_card"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔮 Новый расклад",
+                callback_data="new_reading"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📖 История",
+                callback_data="history"
+            ),
+            InlineKeyboardButton(
+                text="⌂ Главное меню",
+                callback_data="main_menu"
+            )
+        ],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def history_keyboard(
     readings,
@@ -326,7 +360,8 @@ def settings_keyboard(
     current: bool | None,
     gender: str | None = None,
     daily_hour: int | None = None,
-    checkins_enabled: bool = True
+    checkins_enabled: bool = True,
+    monthly_enabled: bool = True
 ) -> InlineKeyboardMarkup:
     def mark(value):
         return " ✅" if current == value else ""
@@ -350,6 +385,13 @@ def settings_keyboard(
                     "📖 «Как сложилось?»: "
                     + ("вкл" if checkins_enabled else "выкл"),
                     "settings:checkins:toggle"
+                )
+            ],
+            [
+                _btn(
+                    "📅 Итоги месяца: "
+                    + ("вкл" if monthly_enabled else "выкл"),
+                    "settings:monthly:toggle"
                 )
             ],
             [_btn("⌂ Главное меню", "main_menu")],
@@ -476,5 +518,14 @@ def llm_error_keyboard() -> InlineKeyboardMarkup:
                     callback_data="main_menu"
                 )
             ],
+        ]
+    )
+
+def suggest_keyboard(spread_name: str, title: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"✅ Да, «{title}»", f"spread:{spread_name}")],
+            [_btn("Выбрать другой формат", "suggest:other")],
+            [_btn("⌂ Главное меню", "main_menu")],
         ]
     )

@@ -890,3 +890,47 @@ def daily_card_message(
         prompt,
         300
     )
+
+
+MONTH_THEMES_SYSTEM_PROMPT = """
+Ты помогаешь человеку вести таро-дневник. Тебе дают список вопросов,
+которые он задавал картам за месяц.
+
+Назови 2–3 темы, которые повторяются в этих вопросах, в 2–3 коротких
+предложениях. Пиши по-русски, спокойно и бережно, обычным текстом,
+без списков, заголовков и символов `#`, `*`, `_`.
+
+Только темы — без советов, без выводов о характере или состоянии
+человека, без диагнозов и без предсказаний. Не цитируй вопросы
+дословно.
+"""
+
+
+def month_themes(
+    questions: list[str],
+    gender: str | None = None
+) -> str:
+    """2–3 предложения о повторяющихся темах вопросов за месяц."""
+
+    trimmed = [
+        question.strip().replace("\n", " ")[:200]
+        for question in questions
+        if question and question.strip()
+    ][-40:]
+
+    listing = "\n".join(f"- {question}" for question in trimmed)
+
+    prompt = f"""
+Вопросы за месяц:
+{listing}
+
+{gender_instruction(gender)}
+
+Назови повторяющиеся темы.
+"""
+
+    return _call_llm(
+        MONTH_THEMES_SYSTEM_PROMPT,
+        prompt,
+        250
+    )

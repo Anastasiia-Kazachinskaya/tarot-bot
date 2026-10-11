@@ -9,62 +9,11 @@
 не публикуется — в базе реальные вопросы живых людей).
 """
 
-import json
 import sys
 from pathlib import Path
 
 from bot.database import get_connection
-from bot.tarot.spreads import SPREADS
-
-
-def spread_title(spread_name: str) -> str:
-    return SPREADS.get(spread_name, {}).get("name", spread_name)
-
-
-def format_cards(spread_json: str) -> str:
-    try:
-        spread = json.loads(spread_json)
-    except (TypeError, ValueError):
-        return "  (не удалось разобрать карты)"
-
-    lines = []
-
-    for index, item in enumerate(spread, start=1):
-        card = item.get("card", {})
-        position = item.get("position", "?")
-        name = card.get("name", "?")
-        orientation = "перевёрнутая" if card.get("reversed") else "прямая"
-
-        lines.append(
-            f"  {index}. {position} — {name} ({orientation})"
-        )
-
-    return "\n".join(lines)
-
-
-def format_reading(row) -> str:
-    parts = [
-        f"Дата: {row['created_at']}",
-        f"Расклад: {spread_title(row['spread_name'])}",
-        "",
-        "Вопрос:",
-        row["question"],
-        "",
-        "Карты:",
-        format_cards(row["spread"]),
-        "",
-        "Интерпретация:",
-        row["interpretation"] or "(нет)",
-    ]
-
-    if row["note"]:
-        parts += ["", "Заметка:", row["note"]]
-
-    if row["resonance"]:
-        label = "отозвалось" if row["resonance"] == "yes" else "мимо"
-        parts += ["", f"Отметка: {label}"]
-
-    return "\n".join(parts)
+from bot.journal import format_reading
 
 
 def safe_filename(user_id: int, username: str | None, first_name: str | None) -> str:
