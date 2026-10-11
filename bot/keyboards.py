@@ -12,13 +12,13 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🌅 Карта дня",
+                    callback_data="daily_now"
+                ),
+                InlineKeyboardButton(
                     text="📖 История",
                     callback_data="history"
                 ),
-                InlineKeyboardButton(
-                    text="📚 Как это работает",
-                    callback_data="about"
-                )
             ],
             [
                 InlineKeyboardButton(
@@ -28,6 +28,12 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="⚙️ Настройки",
                     callback_data="settings"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📚 Как это работает",
+                    callback_data="about"
                 )
             ],
         ]

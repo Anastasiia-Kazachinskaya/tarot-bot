@@ -85,7 +85,9 @@ from .database import (
     get_due_checkins,
     mark_checkin_sent,
     find_recent_same_question,
-    delete_user_data
+    delete_user_data,
+    get_today_daily_card,
+    save_today_daily_card
 )
 
 load_dotenv()
@@ -974,6 +976,40 @@ async def checkins_off(callback: CallbackQuery):
     )
 
 
+@dp.callback_query(F.data == "daily_now")
+async def daily_now(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    today = datetime.now().date().isoformat()
+
+    already = await asyncio.to_thread(get_today_daily_card, user_id, today)
+
+    if already is None:
+        # Новая карта — это запрос к модели, считаем его в лимит.
+        denied = await take_quota(user_id, is_reading=False)
+
+        if denied:
+            await callback.answer()
+            await bot.send_message(
+                user_id,
+                denied,
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard()
+            )
+            return
+
+    await callback.answer(
+        "Карта дня уже вытянута — вот она"
+        if already is not None
+        else "Тяну карту дня…"
+    )
+
+    async with typing(chat_id_of(callback)):
+        await send_daily_card(user_id)
+
+    # Если карту попросили сами, по расписанию сегодня вторую не шлём.
+    await asyncio.to_thread(mark_daily_card_sent, user_id, today)
+
+
 def format_spread(spread: list[dict]) -> str:
     """
     Формирует красивое отображение вытянутых карт
@@ -1231,13 +1267,15 @@ async def about_command(message: Message):
         "• 6 типов раскладов\n"
         "• персональная интерпретация вопроса\n"
         "• история раскладов\n"
-        "• дневник: заметки и отметки\n"
+        "• дневник: заметки и отметки «отозвалось / мимо»\n"
+        "• карта дня по расписанию или по кнопке\n"
+        "• «Как сложилось?» — напоминание через неделю после расклада\n"
         "• изображения карт\n\n"
         "Таро здесь используется как инструмент "
         "символического анализа и рефлексии.\n\n"
-        "Расклады и заметки хранятся, чтобы их можно было "
-        "открыть позже в истории. Владельцу бота видно, "
-        "сколько раскладов сделано, но не их содержание.\n\n"
+        "Расклады и заметки хранятся на сервере бота, чтобы их "
+        "можно было открыть позже в истории. Удалить всё можно "
+        "в любой момент командой /delete_my_data.\n\n"
         "Финальное решение всегда остаётся за тобой.",
         parse_mode="HTML"
     )
@@ -1274,6 +1312,10 @@ async def help_command(message: Message):
         "/help — помощь\n"
         "/reset — сбросить текущий расклад\n"
         "/delete_my_data — удалить все свои данные\n\n"
+        "<b>Карта дня</b>\n\n"
+        "Кнопка «🌅 Карта дня» в главном меню — одна карта "
+        "на весь день. Присылать её автоматически в нужный час "
+        "можно включить в /settings.\n\n"
         "<b>Дневник</b>\n\n"
         "Открой расклад в истории — под ним можно оставить "
         "заметку и отметить, отозвался он или нет. "
@@ -1296,7 +1338,18 @@ async def about_callback(callback: CallbackQuery):
         "риски и направления для размышления.\n\n"
         "Ты задаёшь вопрос.\n"
         "Карты формируют структуру расклада.\n"
-        "AI интерпретирует их в контексте твоего вопроса.\n\n"
+        "AI интерпретирует их в контексте твоего вопроса.\n"
+        "После ответа можно задать уточняющий вопрос "
+        "или вытянуть уточняющую карту.\n\n"
+        "<b>Что ещё умеет бот</b>\n"
+        "🌅 <b>Карта дня</b> — одна карта и мысль на день. "
+        "Можно вытянуть кнопкой или включить по расписанию "
+        "в ⚙️ Настройках.\n"
+        "⚖️ <b>«Выбор»</b> — сначала опиши ситуацию, потом "
+        "бот спросит варианты А и Б по очереди.\n"
+        "📖 <b>«Как сложилось?»</b> — через неделю бот спросит, "
+        "отозвался ли расклад, и отметит это в дневнике.\n"
+        "📊 <b>Дневник</b> — заметки, отметки и частые карты.\n\n"
         "А решение всегда остаётся за тобой.",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard()
@@ -2276,6 +2329,10 @@ async def get_followup(
             "Повтор уточняющего вопроса проигнорирован: user_id=%s",
             message.from_user.id
         )
+
+        # Молчание выглядит как зависание — коротко показываем,
+        # что ответ уже есть (без запроса к модели).
+        await message.answer("☝️ Ответила на это сообщение чуть выше.")
         return
 
     await state.update_data(
@@ -2929,7 +2986,19 @@ CHECKIN_HOURS = range(10, 21)
 SCHEDULER_INTERVAL_SECONDS = 60
 
 
-async def send_daily_card(user_id: int) -> None:
+async def get_or_draw_daily_card(user_id: int) -> tuple[dict, str]:
+    """
+    Карта дня одна на весь день: если сегодня её уже тянули
+    (по кнопке или по расписанию), возвращаем ту же самую.
+    """
+
+    today = datetime.now().date().isoformat()
+
+    saved = await asyncio.to_thread(get_today_daily_card, user_id, today)
+
+    if saved is not None:
+        return saved["card"], saved["text"]
+
     profile = await asyncio.to_thread(get_profile, user_id)
     reversed_pref = await asyncio.to_thread(
         get_reversed_cards_preference,
@@ -2942,8 +3011,6 @@ async def send_daily_card(user_id: int) -> None:
         reversed_pref is True
     )
 
-    orientation = "перевёрнутая" if card["reversed"] else "прямая"
-
     try:
         text = await asyncio.to_thread(
             daily_card_message,
@@ -2952,8 +3019,19 @@ async def send_daily_card(user_id: int) -> None:
         )
     except Exception:
         log_metrics("ERROR (DAILY LLM)", error=True, card=card["name"])
-        # Без модели всё равно отдаём карту со справочным значением.
-        text = card["meaning"]
+        # Без модели всё равно отдаём карту со справочным значением
+        # и не сохраняем: при следующем запросе попробуем ещё раз.
+        return card, card["meaning"]
+
+    await asyncio.to_thread(save_today_daily_card, user_id, today, card, text)
+
+    return card, text
+
+
+async def send_daily_card(user_id: int) -> None:
+    card, text = await get_or_draw_daily_card(user_id)
+
+    orientation = "перевёрнутая" if card["reversed"] else "прямая"
 
     caption = (
         "🌅 <b>Карта дня</b>\n\n"

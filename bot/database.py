@@ -142,6 +142,8 @@ def init_database() -> None:
             ("daily_hour", "INTEGER"),
             ("daily_last_sent", "TEXT"),
             ("checkins_enabled", "INTEGER DEFAULT 1"),
+            ("daily_card_date", "TEXT"),
+            ("daily_card_json", "TEXT"),
         ):
             if name not in profile_columns:
                 connection.execute(
@@ -359,6 +361,54 @@ def get_daily_card_recipients(hour: int, today: str) -> list[int]:
 
 def mark_daily_card_sent(user_id: int, today: str) -> None:
     _upsert_profile(user_id, "daily_last_sent", today)
+
+
+def get_today_daily_card(user_id: int, today: str) -> dict | None:
+    """Карта дня, уже вытянутая сегодня: карта дня одна на весь день."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT daily_card_date, daily_card_json
+            FROM user_profile
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        ).fetchone()
+
+    if row is None or row["daily_card_date"] != today:
+        return None
+
+    try:
+        return json.loads(row["daily_card_json"])
+    except (TypeError, ValueError):
+        return None
+
+
+def save_today_daily_card(
+    user_id: int,
+    today: str,
+    card: dict,
+    text: str
+) -> None:
+    payload = json.dumps(
+        {"card": card, "text": text},
+        ensure_ascii=False
+    )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO user_profile (user_id, daily_card_date, daily_card_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                daily_card_date = excluded.daily_card_date,
+                daily_card_json = excluded.daily_card_json
+            """,
+            (user_id, today, payload)
+        )
+
+        connection.commit()
 
 
 def get_due_checkins(now: str, today: str) -> list[sqlite3.Row]:
