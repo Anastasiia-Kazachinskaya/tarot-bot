@@ -14,6 +14,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
+    ReactionTypeEmoji,
     CallbackQuery,
     ErrorEvent,
     InlineKeyboardMarkup,
@@ -1772,7 +1773,8 @@ async def get_question(
         state,
         question,
         message.from_user.id,
-        message.chat.id
+        message.chat.id,
+        message.message_id
     )
 
 
@@ -1821,7 +1823,8 @@ async def get_option_b(message: Message, state: FSMContext):
         state,
         question,
         message.from_user.id,
-        message.chat.id
+        message.chat.id,
+        message.message_id
     )
 
 
@@ -1829,7 +1832,8 @@ async def start_reading_or_warn(
     state: FSMContext,
     question: str,
     user_id: int,
-    chat_id: int
+    chat_id: int,
+    message_id: int | None = None
 ) -> None:
     """
     Перед раскладом проверяем, не задавали ли этот же вопрос за сутки.
@@ -1865,7 +1869,7 @@ async def start_reading_or_warn(
         )
         return
 
-    await perform_reading(state, question, user_id, chat_id)
+    await perform_reading(state, question, user_id, chat_id, message_id)
 
 
 @dp.callback_query(TarotStates.confirming_repeat, F.data == "repeat:go")
@@ -1880,7 +1884,7 @@ async def repeat_go(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    await callback.answer()
+    await callback.answer("🔮 Тяну карты…")
 
     await perform_reading(
         state,
@@ -1898,11 +1902,28 @@ async def repeat_waiting(message: Message):
     )
 
 
+async def react_to_question(chat_id: int, message_id: int | None) -> None:
+    """Ставит 👀 на сообщение с вопросом. Не получилось — не страшно."""
+
+    if message_id is None:
+        return
+
+    try:
+        await bot.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji="👀")]
+        )
+    except Exception:
+        logger.debug("Не удалось поставить реакцию", exc_info=True)
+
+
 async def perform_reading(
     state: FSMContext,
     question: str,
     user_id: int,
-    chat_id: int
+    chat_id: int,
+    message_id: int | None = None
 ) -> None:
     """
     Вытягивает карты, получает интерпретацию, сохраняет и отправляет.
@@ -1954,13 +1975,10 @@ async def perform_reading(
 
     try:
         draw_start = time.perf_counter()
-        await bot.send_message(
-            chat_id,
-            "🔮 <b>РАСКЛАД СОЗДАЁТСЯ</b>\n\n"
-            "Выбираю карты и собираю их\n"
-            "в контексте твоего вопроса…",
-            parse_mode="HTML"
-        )
+
+        # Вместо служебного сообщения «расклад создаётся» — реакция 👀
+        # на вопрос: видно, что бот принял его, а чат не засоряется.
+        await react_to_question(chat_id, message_id)
 
         spread = make_spread(
             spread_name,
@@ -1975,11 +1993,12 @@ async def perform_reading(
 
         draw_time = time.perf_counter() - draw_start
 
-        image_path = await asyncio.to_thread(
-            render_spread,
-            spread,
-            spread_name
-        )
+        async with ChatActionSender.upload_photo(bot=bot, chat_id=chat_id):
+            image_path = await asyncio.to_thread(
+                render_spread,
+                spread,
+                spread_name
+            )
 
         caption_lines = [
             f"📍 {item['position']} — "
