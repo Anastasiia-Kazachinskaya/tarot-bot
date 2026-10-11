@@ -493,6 +493,49 @@ async def settings_view(user_id: int):
 
     return text, keyboard
 
+# Признаки острого кризиса. Это не диагностика, а страховка:
+# на такие сообщения бот не трактует карты, а даёт контакты помощи.
+CRISIS_RE = re.compile(
+    r"(покончить с собой|суицид|не хочу жить|жить не хочется|"
+    r"не хочется жить|хочу умереть|убить себя|убью себя|"
+    r"свести счеты с жизнью|свести счёты с жизнью|"
+    r"самоповрежд|порезать себя|причинить себе вред)",
+    re.IGNORECASE
+)
+
+CRISIS_TEXT = (
+    "🤍 <b>На это я не хочу отвечать картами.</b>\n\n"
+    "Похоже, сейчас очень тяжело. Пожалуйста, не оставайся "
+    "с этим наедине — напиши или позвони тому, кому доверяешь, "
+    "или специалистам, которые помогают именно в таких "
+    "ситуациях. Это бесплатно и анонимно.\n\n"
+    "• <b>112</b> — если есть угроза жизни прямо сейчас\n"
+    "• <b>8 (495) 989-50-50</b> — телефон доверия экстренной "
+    "психологической помощи МЧС, круглосуточно\n"
+    "• <b>051</b> (с мобильного <b>8 (495) 051</b>) — "
+    "психологическая помощь в Москве, круглосуточно\n"
+    "• <b>8-800-2000-122</b> — телефон доверия для подростков "
+    "и молодёжи\n\n"
+    "Если ты не в России — позвони в местную экстренную службу.\n\n"
+    "Я рядом, если захочется вернуться к раскладам позже."
+)
+
+
+async def answer_if_crisis(message: Message) -> bool:
+    """Если в сообщении признаки острого кризиса — отвечаем контактами помощи."""
+
+    if not CRISIS_RE.search(message.text or ""):
+        return False
+
+    logger.warning(
+        "Сообщение с признаками кризиса: user_id=%s",
+        message.from_user.id
+    )
+
+    await message.answer(CRISIS_TEXT, parse_mode="HTML")
+    return True
+
+
 MAIN_MENU_TEXT = (
     "🔮 <b>MY PERSONAL TAROT</b>\n\n"
     "Не предсказываю будущее.\n"
@@ -1653,6 +1696,9 @@ async def get_question(
         )
         return
 
+    if await answer_if_crisis(message):
+        return
+
     data = await state.get_data()
 
     # «Выбор»: варианты спрашиваем отдельно, чтобы модель не гадала,
@@ -1681,6 +1727,9 @@ async def get_question(
 async def get_option_a(message: Message, state: FSMContext):
     option_a = (message.text or "").strip()
 
+    if await answer_if_crisis(message):
+        return
+
     if not option_a:
         await message.answer("⚖️ Напиши вариант А текстом.")
         return
@@ -1699,6 +1748,9 @@ async def get_option_a(message: Message, state: FSMContext):
 @dp.message(TarotStates.waiting_for_option_b)
 async def get_option_b(message: Message, state: FSMContext):
     option_b = (message.text or "").strip()
+
+    if await answer_if_crisis(message):
+        return
 
     if not option_b:
         await message.answer("⚖️ Напиши вариант Б текстом.")
@@ -2187,6 +2239,10 @@ async def retry_interpretation(
         chunks=len(chunks)
     )
 
+# Повтор того же уточнения в течение этого времени игнорируем.
+FOLLOWUP_DUPLICATE_SECONDS = 60
+
+
 @dp.message(TarotStates.follow_up)
 async def get_followup(
     message: Message,
@@ -2200,7 +2256,31 @@ async def get_followup(
         )
         return
 
+    if await answer_if_crisis(message):
+        return
+
     data = await state.get_data()
+
+    # Одно и то же сообщение, отправленное дважды подряд (двойное
+    # нажатие, «не дошло?»), не стоит второго ответа и второго запроса
+    # к модели.
+    normalized = " ".join(follow_up_question.lower().split())
+    now_ts = time.time()
+    last = data.get("last_followup") or {}
+
+    if (
+        last.get("text") == normalized
+        and now_ts - last.get("ts", 0) < FOLLOWUP_DUPLICATE_SECONDS
+    ):
+        logger.info(
+            "Повтор уточняющего вопроса проигнорирован: user_id=%s",
+            message.from_user.id
+        )
+        return
+
+    await state.update_data(
+        last_followup={"text": normalized, "ts": now_ts}
+    )
 
     spread_name = data.get("spread_name")
     spread = data.get("spread")
