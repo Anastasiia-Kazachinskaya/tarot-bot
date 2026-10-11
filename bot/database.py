@@ -1,7 +1,8 @@
 import json
 import os
 import sqlite3
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -115,6 +116,37 @@ def init_database() -> None:
             connection.execute(
                 "ALTER TABLE readings ADD COLUMN resonance TEXT"
             )
+
+        # «Как сложилось?»: когда спросить и спросили ли уже.
+        # У старых раскладов checkin_due пустой — о них не напоминаем.
+        if "checkin_due" not in columns:
+            connection.execute(
+                "ALTER TABLE readings ADD COLUMN checkin_due TEXT"
+            )
+
+        if "checkin_sent" not in columns:
+            connection.execute(
+                "ALTER TABLE readings ADD COLUMN checkin_sent INTEGER"
+            )
+
+        # Профиль: знакомство, карта дня, напоминания.
+        profile_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(user_profile)"
+            )
+        }
+
+        for name, ddl in (
+            ("onboarded", "INTEGER DEFAULT 0"),
+            ("daily_hour", "INTEGER"),
+            ("daily_last_sent", "TEXT"),
+            ("checkins_enabled", "INTEGER DEFAULT 1"),
+        ):
+            if name not in profile_columns:
+                connection.execute(
+                    f"ALTER TABLE user_profile ADD COLUMN {name} {ddl}"
+                )
 
         connection.commit()
 
@@ -240,6 +272,218 @@ def set_user_gender(user_id: int, gender: str | None) -> None:
         connection.commit()
 
 
+# Через сколько дней спрашивать «как сложилось?».
+CHECKIN_AFTER_DAYS = 7
+
+
+def get_profile(user_id: int) -> dict:
+    """
+    Профиль пользователя со значениями по умолчанию, если строки нет:
+    род не задан, знакомство не пройдено, карта дня выключена,
+    напоминания «как сложилось?» включены.
+    """
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT gender, onboarded, daily_hour, checkins_enabled
+            FROM user_profile
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        ).fetchone()
+
+    if row is None:
+        return {
+            "gender": None,
+            "onboarded": False,
+            "daily_hour": None,
+            "checkins_enabled": True,
+        }
+
+    return {
+        "gender": row["gender"] if row["gender"] in ("f", "m") else None,
+        "onboarded": bool(row["onboarded"]),
+        "daily_hour": row["daily_hour"],
+        "checkins_enabled": row["checkins_enabled"] != 0,
+    }
+
+
+def _upsert_profile(user_id: int, column: str, value) -> None:
+    # column берётся только из констант ниже, не из пользовательского ввода.
+    with get_connection() as connection:
+        connection.execute(
+            f"""
+            INSERT INTO user_profile (user_id, {column})
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                {column} = excluded.{column}
+            """,
+            (user_id, value)
+        )
+
+        connection.commit()
+
+
+def set_onboarded(user_id: int) -> None:
+    _upsert_profile(user_id, "onboarded", 1)
+
+
+def set_daily_hour(user_id: int, hour: int | None) -> None:
+    if hour is not None and not 0 <= hour <= 23:
+        raise ValueError(f"Неверный час: {hour}")
+
+    _upsert_profile(user_id, "daily_hour", hour)
+
+
+def set_checkins_enabled(user_id: int, enabled: bool) -> None:
+    _upsert_profile(user_id, "checkins_enabled", int(enabled))
+
+
+def get_daily_card_recipients(hour: int, today: str) -> list[int]:
+    """Кому пора прислать карту дня в этот час и кто её сегодня ещё не получал."""
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT user_id
+            FROM user_profile
+            WHERE daily_hour = ?
+              AND (daily_last_sent IS NULL OR daily_last_sent != ?)
+            """,
+            (hour, today)
+        ).fetchall()
+
+    return [row["user_id"] for row in rows]
+
+
+def mark_daily_card_sent(user_id: int, today: str) -> None:
+    _upsert_profile(user_id, "daily_last_sent", today)
+
+
+def get_due_checkins(now: str, today: str) -> list[sqlite3.Row]:
+    """
+    Расклады, о которых пора спросить «как сложилось?»: срок наступил,
+    ещё не спрашивали, отметки нет, напоминания у человека включены.
+    Не больше одного вопроса на человека в день — берём самый старый
+    расклад, остальные подождут до завтра.
+    """
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT r.id, r.user_id, r.created_at, r.question, r.spread_name
+            FROM readings r
+            LEFT JOIN user_profile p ON p.user_id = r.user_id
+            WHERE r.checkin_due IS NOT NULL
+              AND r.checkin_due <= ?
+              AND r.checkin_sent IS NULL
+              AND r.resonance IS NULL
+              AND COALESCE(p.checkins_enabled, 1) = 1
+              AND r.id = (
+                  SELECT MIN(r2.id)
+                  FROM readings r2
+                  WHERE r2.user_id = r.user_id
+                    AND r2.checkin_due IS NOT NULL
+                    AND r2.checkin_due <= ?
+                    AND r2.checkin_sent IS NULL
+                    AND r2.resonance IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM readings r3
+                  WHERE r3.user_id = r.user_id
+                    AND r3.checkin_sent = 1
+                    AND substr(r3.checkin_due, 1, 10) = ?
+              )
+            """,
+            (now, now, today)
+        ).fetchall()
+
+    return rows
+
+
+def mark_checkin_sent(reading_id: int) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE readings
+            SET checkin_sent = 1,
+                checkin_due = ?
+            WHERE id = ?
+            """,
+            (datetime.now().isoformat(timespec="seconds"), reading_id)
+        )
+
+        connection.commit()
+
+
+def normalize_question(text: str) -> str:
+    """Для сравнения вопросов: без регистра, пунктуации и лишних пробелов."""
+
+    text = text.lower().replace("ё", "е")
+    text = re.sub(r"[^\w\s]", " ", text)
+    return " ".join(text.split())
+
+
+def find_recent_same_question(
+    user_id: int,
+    question: str,
+    hours: int = 24
+) -> sqlite3.Row | None:
+    """Был ли такой же вопрос за последние сутки — самый свежий расклад."""
+
+    since = (
+        datetime.now() - timedelta(hours=hours)
+    ).isoformat(timespec="seconds")
+
+    target = normalize_question(question)
+
+    if not target:
+        return None
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, created_at, question, spread_name
+            FROM readings
+            WHERE user_id = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (user_id, since)
+        ).fetchall()
+
+    for row in rows:
+        if normalize_question(row["question"]) == target:
+            return row
+
+    return None
+
+
+def delete_user_data(user_id: int) -> int:
+    """
+    Удаляет всё, что бот хранит о человеке: расклады с заметками,
+    настройки, профиль, счётчики лимитов и запись в списке
+    пользователей. Возвращает число удалённых раскладов.
+    """
+
+    with get_connection() as connection:
+        deleted = connection.execute(
+            "DELETE FROM readings WHERE user_id = ?",
+            (user_id,)
+        ).rowcount
+
+        for table in ("user_settings", "user_profile", "usage", "users"):
+            connection.execute(
+                f"DELETE FROM {table} WHERE user_id = ?",
+                (user_id,)
+            )
+
+        connection.commit()
+
+    return deleted
+
+
 def save_reading(
     user_id: int,
     question: str,
@@ -248,7 +492,11 @@ def save_reading(
     interpretation: str
 ) -> int:
 
-    created_at = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now()
+    created_at = now.isoformat(timespec="seconds")
+    checkin_due = (
+        now + timedelta(days=CHECKIN_AFTER_DAYS)
+    ).isoformat(timespec="seconds")
 
     spread_json = json.dumps(
         spread,
@@ -264,9 +512,10 @@ def save_reading(
                 question,
                 spread_name,
                 spread,
-                interpretation
+                interpretation,
+                checkin_due
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -274,7 +523,8 @@ def save_reading(
                 question,
                 spread_name,
                 spread_json,
-                interpretation
+                interpretation,
+                checkin_due
             )
         )
 

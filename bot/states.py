@@ -8,3 +8,6 @@ class TarotStates(StatesGroup):
     processing = State()
     follow_up = State()
     waiting_for_note = State()
+    waiting_for_option_a = State()
+    waiting_for_option_b = State()
+    confirming_repeat = State()

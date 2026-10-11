@@ -6,11 +6,14 @@ import os
 import re
 import time
 import traceback
+from datetime import datetime
+from functools import partial
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     ErrorEvent,
     InlineKeyboardMarkup,
@@ -32,7 +35,16 @@ from .keyboards import (
     history_keyboard,
     reading_keyboard,
     llm_error_keyboard,
-    settings_keyboard
+    settings_keyboard,
+    daily_hour_keyboard,
+    describe_daily_hour,
+    onboarding_gender_keyboard,
+    onboarding_reversed_keyboard,
+    onboarding_daily_keyboard,
+    repeat_question_keyboard,
+    checkin_keyboard,
+    daily_card_keyboard,
+    delete_data_keyboard
 )
 
 from .states import TarotStates
@@ -41,7 +53,8 @@ from .tarot.renderer import render_spread, render_single_card
 from .llm.cloudru import (
     interpret_tarot,
     answer_followup,
-    interpret_clarifying_card
+    interpret_clarifying_card,
+    daily_card_message
 )
 from .tarot.spreads import SPREADS
 
@@ -62,7 +75,17 @@ from .database import (
     get_usage,
     consume_quota,
     touch_user,
-    get_bot_stats
+    get_bot_stats,
+    get_profile,
+    set_onboarded,
+    set_daily_hour,
+    set_checkins_enabled,
+    get_daily_card_recipients,
+    mark_daily_card_sent,
+    get_due_checkins,
+    mark_checkin_sent,
+    find_recent_same_question,
+    delete_user_data
 )
 
 load_dotenv()
@@ -359,8 +382,8 @@ SPREAD_EXAMPLES = {
     ),
 
     "choice": (
-        "Остаться на нынешней работе или принять оффер?",
-        "Снимать квартиру дальше или брать ипотеку?",
+        "Мне предложили работу в другой компании, не знаю, уходить ли.",
+        "Думаю, где жить дальше: снимать или брать ипотеку.",
     ),
 
     "seven_cards": (
@@ -383,7 +406,8 @@ SPREAD_QUESTION_HINTS = {
     ),
 
     "choice": (
-        "Назови оба варианта: расклад сравнивает их между собой."
+        "Опиши ситуацию, в которой выбираешь. Варианты А и Б "
+        "я спрошу следующими сообщениями — по одному."
     ),
 
     "one_card": (
@@ -426,31 +450,160 @@ def describe_gender(gender: str | None) -> str:
 
 def get_settings_text(
     current: bool | None,
-    gender: str | None = None
+    gender: str | None = None,
+    daily_hour: int | None = None,
+    checkins_enabled: bool = True
 ) -> str:
     return (
         "⚙️ <b>НАСТРОЙКИ</b>\n\n"
-        "Использовать перевёрнутые карты в новых раскладах?\n\n"
-        f"Текущий режим: <b>{describe_reversed_preference(current)}</b>.\n\n"
-        "Если выбрать «Всегда да/нет», в следующий раз "
-        "спрашивать не буду — можно поменять здесь в любой момент.\n\n"
-        "──────────────\n\n"
-        "Как обращаться к тебе в интерпретациях?\n\n"
-        f"Сейчас: <b>{describe_gender(gender)}</b>."
+        "<b>Перевёрнутые карты</b> в новых раскладах: "
+        f"{describe_reversed_preference(current)}.\n\n"
+        "<b>Обращение</b> в интерпретациях: "
+        f"{describe_gender(gender)}.\n\n"
+        "<b>Карта дня</b> (по московскому времени): "
+        f"{describe_daily_hour(daily_hour)}.\n\n"
+        "<b>«Как сложилось?»</b> — через неделю после расклада "
+        "спрошу, отозвался ли он: "
+        f"{'вкл' if checkins_enabled else 'выкл'}."
     )
+
+
+async def settings_view(user_id: int):
+    """Текст и клавиатура экрана настроек с актуальными значениями."""
+
+    reversed_pref = await asyncio.to_thread(
+        get_reversed_cards_preference,
+        user_id
+    )
+    profile = await asyncio.to_thread(get_profile, user_id)
+
+    text = get_settings_text(
+        reversed_pref,
+        profile["gender"],
+        profile["daily_hour"],
+        profile["checkins_enabled"]
+    )
+
+    keyboard = settings_keyboard(
+        reversed_pref,
+        profile["gender"],
+        profile["daily_hour"],
+        profile["checkins_enabled"]
+    )
+
+    return text, keyboard
+
+MAIN_MENU_TEXT = (
+    "🔮 <b>MY PERSONAL TAROT</b>\n\n"
+    "Не предсказываю будущее.\n"
+    "Помогаю посмотреть на ситуацию с другой стороны.\n\n"
+    "Выбери, что хочешь сделать:"
+)
+
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
 
+    profile = await asyncio.to_thread(get_profile, message.from_user.id)
+
+    if not profile["onboarded"]:
+        await message.answer(
+            "🔮 <b>Привет! Я — личный таро-бот.</b>\n\n"
+            "Не предсказываю будущее, а помогаю посмотреть "
+            "на ситуацию с другой стороны. Все расклады сохраняются "
+            "в дневник — к ним можно вернуться.\n\n"
+            "Пара быстрых настроек, и начнём (всё меняется "
+            "потом в /settings).\n\n"
+            "<b>1/3. Как к тебе обращаться в интерпретациях?</b>",
+            parse_mode="HTML",
+            reply_markup=onboarding_gender_keyboard()
+        )
+        return
+
     await message.answer(
-        "🔮 <b>MY PERSONAL TAROT</b>\n\n"
-        "Не предсказываю будущее.\n"
-        "Помогаю посмотреть на ситуацию с другой стороны.\n\n"
-        "Выбери, что хочешь сделать:",
+        MAIN_MENU_TEXT,
         parse_mode="HTML",
         reply_markup=main_menu_keyboard()
     )
+
+
+@dp.callback_query(F.data.startswith("onboard:gender:"))
+async def onboard_gender(callback: CallbackQuery):
+    choice = callback.data.split(":")[2]
+
+    if choice not in ("f", "m", "none"):
+        await callback.answer("Неизвестный вариант.")
+        return
+
+    await asyncio.to_thread(
+        set_user_gender,
+        callback.from_user.id,
+        None if choice == "none" else choice
+    )
+
+    await safe_edit(
+        callback,
+        "🔮 <b>2/3. Использовать перевёрнутые карты?</b>\n\n"
+        "Перевёрнутая карта добавляет оттенки: блок, задержку, "
+        "обратную сторону темы. Без них расклады проще.",
+        reply_markup=onboarding_reversed_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("onboard:reversed:"))
+async def onboard_reversed(callback: CallbackQuery):
+    choice = callback.data.split(":")[2]
+
+    if choice not in ("yes", "no", "ask"):
+        await callback.answer("Неизвестный вариант.")
+        return
+
+    await asyncio.to_thread(
+        set_reversed_cards_preference,
+        callback.from_user.id,
+        {"yes": True, "no": False, "ask": None}[choice]
+    )
+
+    await safe_edit(
+        callback,
+        "🔮 <b>3/3. Присылать карту дня?</b>\n\n"
+        "Каждый день в выбранный час — одна карта и короткая мысль "
+        "на день. Время московское.",
+        reply_markup=onboarding_daily_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("onboard:daily:"))
+async def onboard_daily(callback: CallbackQuery):
+    ok, hour = parse_hour_choice(callback.data.split(":")[2])
+
+    if not ok:
+        await callback.answer("Неизвестное время.")
+        return
+
+    await asyncio.to_thread(set_daily_hour, callback.from_user.id, hour)
+    await asyncio.to_thread(set_onboarded, callback.from_user.id)
+
+    daily_note = (
+        f"Карта дня будет приходить в {hour:02d}:00.\n\n"
+        if hour is not None
+        else ""
+    )
+
+    await safe_edit(
+        callback,
+        "✅ <b>Готово!</b>\n\n"
+        f"{daily_note}"
+        "Через неделю после расклада я спрошу, как всё сложилось, — "
+        "так в дневнике будет видно, что отзывается. "
+        "Выключить можно в /settings.\n\n"
+        "Выбери, что хочешь сделать:",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu(callback: CallbackQuery, state: FSMContext):
@@ -609,23 +762,24 @@ async def choose_reversed(
 
 @dp.callback_query(F.data == "settings")
 async def settings_menu(callback: CallbackQuery):
-    current = await asyncio.to_thread(
-        get_reversed_cards_preference,
-        callback.from_user.id
-    )
+    text, keyboard = await settings_view(callback.from_user.id)
 
-    gender = await asyncio.to_thread(
-        get_user_gender,
-        callback.from_user.id
-    )
-
-    await safe_edit(callback,
-        get_settings_text(current, gender),
-        parse_mode="HTML",
-        reply_markup=settings_keyboard(current, gender)
-    )
-
+    await safe_edit(callback, text, reply_markup=keyboard)
     await callback.answer()
+
+
+@dp.message(Command("settings"))
+async def settings_command(message: Message, state: FSMContext):
+    await state.clear()
+
+    text, keyboard = await settings_view(message.from_user.id)
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
 
 @dp.callback_query(F.data.startswith("settings:reversed:"))
 async def update_reversed_setting(callback: CallbackQuery):
@@ -656,17 +810,8 @@ async def update_reversed_setting(callback: CallbackQuery):
         value
     )
 
-    gender = await asyncio.to_thread(
-        get_user_gender,
-        callback.from_user.id
-    )
-
-    await safe_edit(callback,
-        get_settings_text(value, gender),
-        parse_mode="HTML",
-        reply_markup=settings_keyboard(value, gender)
-    )
-
+    text, keyboard = await settings_view(callback.from_user.id)
+    await safe_edit(callback, text, reply_markup=keyboard)
     await callback.answer("Сохранено")
 
 
@@ -695,18 +840,95 @@ async def update_gender_setting(callback: CallbackQuery):
         value
     )
 
-    reversed_pref = await asyncio.to_thread(
-        get_reversed_cards_preference,
-        callback.from_user.id
-    )
-
-    await safe_edit(callback,
-        get_settings_text(reversed_pref, value),
-        parse_mode="HTML",
-        reply_markup=settings_keyboard(reversed_pref, value)
-    )
-
+    text, keyboard = await settings_view(callback.from_user.id)
+    await safe_edit(callback, text, reply_markup=keyboard)
     await callback.answer("Сохранено")
+
+
+@dp.callback_query(F.data == "settings:daily")
+async def daily_settings(callback: CallbackQuery):
+    profile = await asyncio.to_thread(get_profile, callback.from_user.id)
+
+    await safe_edit(
+        callback,
+        "🌅 <b>КАРТА ДНЯ</b>\n\n"
+        "Каждый день в выбранный час пришлю одну карту "
+        "и короткую мысль на день.\n\n"
+        "Время московское.\n\n"
+        f"Сейчас: <b>{describe_daily_hour(profile['daily_hour'])}</b>.",
+        reply_markup=daily_hour_keyboard(profile["daily_hour"])
+    )
+    await callback.answer()
+
+
+def parse_hour_choice(value: str) -> tuple[bool, int | None]:
+    """«9» → (True, 9), «off» → (True, None), мусор → (False, None)."""
+
+    if value == "off":
+        return True, None
+
+    try:
+        hour = int(value)
+    except ValueError:
+        return False, None
+
+    return (0 <= hour <= 23), hour
+
+
+@dp.callback_query(F.data.startswith("settings:daily_hour:"))
+async def update_daily_hour(callback: CallbackQuery):
+    ok, hour = parse_hour_choice(callback.data.split(":")[2])
+
+    if not ok:
+        await callback.answer("Неизвестное время.")
+        return
+
+    await asyncio.to_thread(set_daily_hour, callback.from_user.id, hour)
+
+    text, keyboard = await settings_view(callback.from_user.id)
+    await safe_edit(callback, text, reply_markup=keyboard)
+
+    await callback.answer(
+        "Карта дня выключена"
+        if hour is None
+        else f"Пришлю карту дня в {hour:02d}:00"
+    )
+
+
+@dp.callback_query(F.data == "settings:checkins:toggle")
+async def toggle_checkins(callback: CallbackQuery):
+    profile = await asyncio.to_thread(get_profile, callback.from_user.id)
+    enabled = not profile["checkins_enabled"]
+
+    await asyncio.to_thread(
+        set_checkins_enabled,
+        callback.from_user.id,
+        enabled
+    )
+
+    text, keyboard = await settings_view(callback.from_user.id)
+    await safe_edit(callback, text, reply_markup=keyboard)
+    await callback.answer("Включено" if enabled else "Выключено")
+
+
+@dp.callback_query(F.data == "checkins:off")
+async def checkins_off(callback: CallbackQuery):
+    await asyncio.to_thread(
+        set_checkins_enabled,
+        callback.from_user.id,
+        False
+    )
+
+    if callback.message is not None:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+    await callback.answer(
+        "Больше не спрошу. Включить снова можно в /settings",
+        show_alert=True
+    )
 
 
 def format_spread(spread: list[dict]) -> str:
@@ -993,8 +1215,9 @@ async def help_command(message: Message):
         "✅ «Что влияет на мою усталость от работы "
         "и что с ней делать?»\n\n"
         "Вопрос стоит подбирать под расклад: "
-        "для «Выбора» назови оба варианта, для «Отношений» — "
-        "о ком речь, для одной карты хватит короткого фокуса. "
+        "для «Выбора» опиши ситуацию, а варианты А и Б бот спросит "
+        "отдельно; для «Отношений» — о ком речь; для одной карты "
+        "хватит короткого фокуса. "
         "Примеры бот показывает на экране вопроса.\n\n"
         "<b>Команды:</b>\n"
         "/start — главное меню\n"
@@ -1002,9 +1225,12 @@ async def help_command(message: Message):
         "/card Башня — значение любой карты\n"
         "/history — история раскладов\n"
         "/stats — дневник и статистика\n"
+        "/settings — настройки: обращение, перевёрнутые карты, "
+        "карта дня, «как сложилось?»\n"
         "/about — о боте\n"
         "/help — помощь\n"
-        "/reset — сбросить текущий расклад\n\n"
+        "/reset — сбросить текущий расклад\n"
+        "/delete_my_data — удалить все свои данные\n\n"
         "<b>Дневник</b>\n\n"
         "Открой расклад в истории — под ним можно оставить "
         "заметку и отметить, отозвался он или нет. "
@@ -1344,6 +1570,61 @@ async def stats_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.message(Command("delete_my_data"))
+async def delete_my_data_command(message: Message, state: FSMContext):
+    await state.clear()
+
+    total = await asyncio.to_thread(
+        count_user_readings,
+        message.from_user.id
+    )
+
+    await message.answer(
+        "🗑 <b>УДАЛИТЬ ВСЕ ДАННЫЕ?</b>\n\n"
+        f"Будут удалены: {total} "
+        f"{plural(total, 'расклад', 'расклада', 'раскладов')} "
+        "с заметками и отметками, все настройки, карта дня "
+        "и счётчики лимитов.\n\n"
+        "<b>Восстановить их будет нельзя.</b>",
+        parse_mode="HTML",
+        reply_markup=delete_data_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "delete_data:confirm")
+async def delete_my_data_confirm(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+
+    deleted = await asyncio.to_thread(
+        delete_user_data,
+        callback.from_user.id
+    )
+
+    logger.info(
+        "Пользователь %s удалил свои данные (раскладов: %s)",
+        callback.from_user.id,
+        deleted
+    )
+
+    await safe_edit(
+        callback,
+        "🗑 <b>Готово, всё удалено.</b>\n\n"
+        f"Раскладов удалено: {deleted}.\n\n"
+        "Если захочешь вернуться — просто нажми /start."
+    )
+    await callback.answer("Удалено")
+
+
+@dp.callback_query(F.data == "delete_data:cancel")
+async def delete_my_data_cancel(callback: CallbackQuery):
+    await safe_edit(
+        callback,
+        "Хорошо, ничего не удаляю.",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.answer()
+
+
 @dp.callback_query(F.data == "new_reading")
 async def new_reading(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1364,13 +1645,165 @@ async def get_question(
     message: Message,
     state: FSMContext
 ):
-    question = message.text
+    question = (message.text or "").strip()
 
     if not question:
         await message.answer(
             "🔮 Пожалуйста, напиши свой вопрос текстом."
         )
         return
+
+    data = await state.get_data()
+
+    # «Выбор»: варианты спрашиваем отдельно, чтобы модель не гадала,
+    # где вариант А, а где Б.
+    if data.get("spread_name") == "choice":
+        await state.update_data(choice_question=question)
+        await state.set_state(TarotStates.waiting_for_option_a)
+
+        await message.answer(
+            "⚖️ <b>Вариант А</b>\n\n"
+            "Коротко опиши первый вариант.\n"
+            "Например: <i>остаться на нынешней работе</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    await start_reading_or_warn(
+        state,
+        question,
+        message.from_user.id,
+        message.chat.id
+    )
+
+
+@dp.message(TarotStates.waiting_for_option_a)
+async def get_option_a(message: Message, state: FSMContext):
+    option_a = (message.text or "").strip()
+
+    if not option_a:
+        await message.answer("⚖️ Напиши вариант А текстом.")
+        return
+
+    await state.update_data(option_a=option_a)
+    await state.set_state(TarotStates.waiting_for_option_b)
+
+    await message.answer(
+        "⚖️ <b>Вариант Б</b>\n\n"
+        "Теперь второй вариант.\n"
+        "Например: <i>принять оффер</i>",
+        parse_mode="HTML"
+    )
+
+
+@dp.message(TarotStates.waiting_for_option_b)
+async def get_option_b(message: Message, state: FSMContext):
+    option_b = (message.text or "").strip()
+
+    if not option_b:
+        await message.answer("⚖️ Напиши вариант Б текстом.")
+        return
+
+    data = await state.get_data()
+
+    question = (
+        f"{data.get('choice_question', '').strip()}\n"
+        f"Вариант А: {data.get('option_a', '').strip()}\n"
+        f"Вариант Б: {option_b}"
+    )
+
+    await start_reading_or_warn(
+        state,
+        question,
+        message.from_user.id,
+        message.chat.id
+    )
+
+
+async def start_reading_or_warn(
+    state: FSMContext,
+    question: str,
+    user_id: int,
+    chat_id: int
+) -> None:
+    """
+    Перед раскладом проверяем, не задавали ли этот же вопрос за сутки.
+    Если задавали — мягко предлагаем открыть тот расклад; новый можно
+    сделать одной кнопкой.
+    """
+
+    previous = await asyncio.to_thread(
+        find_recent_same_question,
+        user_id,
+        question
+    )
+
+    if previous is not None:
+        await state.update_data(pending_question=question)
+        await state.set_state(TarotStates.confirming_repeat)
+
+        spread_title = SPREADS.get(
+            previous["spread_name"], {}
+        ).get("name", previous["spread_name"])
+
+        await bot.send_message(
+            chat_id,
+            "🔁 <b>Этот вопрос уже был сегодня</b>\n\n"
+            f"В {previous['created_at'][11:16]} — расклад "
+            f"«{html.escape(spread_title)}».\n\n"
+            "Карты не обязаны отвечать одинаково, но если тянуть их "
+            "снова и снова, легко начать искать ответ, который "
+            "хочется услышать. Можно вернуться к тому раскладу "
+            "или всё же сделать новый.",
+            parse_mode="HTML",
+            reply_markup=repeat_question_keyboard(previous["id"])
+        )
+        return
+
+    await perform_reading(state, question, user_id, chat_id)
+
+
+@dp.callback_query(TarotStates.confirming_repeat, F.data == "repeat:go")
+async def repeat_go(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    question = data.get("pending_question")
+
+    if not question:
+        await callback.answer(
+            "Расклад устарел. Начни заново: /start",
+            show_alert=True
+        )
+        return
+
+    await callback.answer()
+
+    await perform_reading(
+        state,
+        question,
+        callback.from_user.id,
+        chat_id_of(callback)
+    )
+
+
+@dp.message(TarotStates.confirming_repeat)
+async def repeat_waiting(message: Message):
+    await message.answer(
+        "🔁 Выбери кнопку выше: открыть прошлый расклад "
+        "или сделать новый. Или /start — в главное меню."
+    )
+
+
+async def perform_reading(
+    state: FSMContext,
+    question: str,
+    user_id: int,
+    chat_id: int
+) -> None:
+    """
+    Вытягивает карты, получает интерпретацию, сохраняет и отправляет.
+    Работает и из сообщения, и из кнопки, поэтому отвечает через
+    bot.send_* по chat_id, а не через message.answer.
+    """
 
     await state.set_state(
         TarotStates.processing
@@ -1387,21 +1820,23 @@ async def get_question(
         await state.clear()
         await state.set_state(TarotStates.choosing_spread)
 
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             "🔮 Не понял, какой расклад делать. Выбери его заново:",
             reply_markup=spread_keyboard()
         )
         return
 
     denied = await take_quota(
-        message.from_user.id,
+        user_id,
         is_reading=True
     )
 
     if denied:
         await state.set_state(TarotStates.choosing_spread)
 
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             denied,
             parse_mode="HTML",
             reply_markup=main_menu_keyboard()
@@ -1414,7 +1849,8 @@ async def get_question(
 
     try:
         draw_start = time.perf_counter()
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             "🔮 <b>РАСКЛАД СОЗДАЁТСЯ</b>\n\n"
             "Выбираю карты и собираю их\n"
             "в контексте твоего вопроса…",
@@ -1448,7 +1884,8 @@ async def get_question(
         ]
 
         try:
-            await message.answer_photo(
+            await bot.send_photo(
+                chat_id,
                 photo=FSInputFile(image_path),
                 caption=(
                     f"🔮 <b>{html.escape(SPREADS[spread_name]['name'])}</b>\n\n"
@@ -1470,7 +1907,8 @@ async def get_question(
             spread=spread_name
         )
 
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             "🔮 Не получилось вытянуть карты для этого расклада. "
             "Попробуй начать заново через /start."
         )
@@ -1487,10 +1925,10 @@ async def get_question(
 
         gender = await asyncio.to_thread(
             get_user_gender,
-            message.from_user.id
+            user_id
         )
 
-        async with typing(message.chat.id):
+        async with typing(chat_id):
             interpretation = await asyncio.to_thread(
                 interpret_tarot,
                 question=question,
@@ -1514,7 +1952,8 @@ async def get_question(
             total=seconds(total_time)
         )
 
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             "⚠️ <b>ИНТЕРПРЕТАЦИЯ ВРЕМЕННО НЕДОСТУПНА</b>\n\n"
             "Карты уже выбраны, но сейчас AI "
             "не смог завершить интерпретацию.\n\n"
@@ -1534,7 +1973,7 @@ async def get_question(
     try:
         await asyncio.to_thread(
             save_reading,
-            user_id=message.from_user.id,
+            user_id=user_id,
             question=question,
             spread_name=spread_name,
             spread=spread,
@@ -1560,7 +1999,7 @@ async def get_question(
         telegram_start = time.perf_counter()
 
         chunks = await send_llm_response(
-            message.answer,
+            partial(bot.send_message, chat_id),
             interpretation,
             prefix="🔮 <b>Интерпретация расклада</b>\n\n",
             suffix=FOLLOWUP_HINT
@@ -2400,7 +2839,182 @@ async def handle_error(event: ErrorEvent):
         pass
 
 
+# -------------------------
+# Расписание: карта дня и «как сложилось?»
+# -------------------------
+
+# Не беспокоим «как сложилось?» ночью: только с 10:00 до 21:00.
+CHECKIN_HOURS = range(10, 21)
+
+SCHEDULER_INTERVAL_SECONDS = 60
+
+
+async def send_daily_card(user_id: int) -> None:
+    profile = await asyncio.to_thread(get_profile, user_id)
+    reversed_pref = await asyncio.to_thread(
+        get_reversed_cards_preference,
+        user_id
+    )
+
+    card = await asyncio.to_thread(
+        draw_single_card,
+        None,
+        reversed_pref is True
+    )
+
+    orientation = "перевёрнутая" if card["reversed"] else "прямая"
+
+    try:
+        text = await asyncio.to_thread(
+            daily_card_message,
+            card,
+            profile["gender"]
+        )
+    except Exception:
+        log_metrics("ERROR (DAILY LLM)", error=True, card=card["name"])
+        # Без модели всё равно отдаём карту со справочным значением.
+        text = card["meaning"]
+
+    caption = (
+        "🌅 <b>Карта дня</b>\n\n"
+        f"{html.escape(card['name'])} · {orientation}"
+    )
+
+    try:
+        image_path = await asyncio.to_thread(render_single_card, card)
+
+        try:
+            await bot.send_photo(
+                user_id,
+                photo=FSInputFile(image_path),
+                caption=caption,
+                parse_mode="HTML"
+            )
+        finally:
+            image_path.unlink(missing_ok=True)
+
+    except TelegramForbiddenError:
+        raise
+    except Exception:
+        log_metrics("ERROR (DAILY IMAGE)", error=True, card=card["name"])
+        await bot.send_message(user_id, caption, parse_mode="HTML")
+
+    await send_llm_response(
+        partial(bot.send_message, user_id),
+        text,
+        reply_markup=daily_card_keyboard()
+    )
+
+
+async def send_checkin(reading) -> None:
+    spread_title = SPREADS.get(
+        reading["spread_name"], {}
+    ).get("name", reading["spread_name"])
+
+    question = reading["question"]
+
+    if len(question) > 300:
+        question = question[:300].rstrip() + "…"
+
+    await bot.send_message(
+        reading["user_id"],
+        "📖 <b>Как сложилось?</b>\n\n"
+        f"{reading['created_at'][:10]} был расклад "
+        f"«{html.escape(spread_title)}» на вопрос:\n"
+        f"<i>{html.escape(question)}</i>\n\n"
+        "Прошла неделя. Отозвался он или прошёл мимо? "
+        "Отметка сохранится в дневнике (/stats).",
+        parse_mode="HTML",
+        reply_markup=checkin_keyboard(reading["id"])
+    )
+
+
+async def run_schedule_tick() -> None:
+    now = datetime.now()
+    today = now.date().isoformat()
+
+    recipients = await asyncio.to_thread(
+        get_daily_card_recipients,
+        now.hour,
+        today
+    )
+
+    for user_id in recipients:
+        # Отмечаем до отправки: если что-то упадёт посередине,
+        # человек не получит две карты за день.
+        await asyncio.to_thread(mark_daily_card_sent, user_id, today)
+
+        try:
+            await send_daily_card(user_id)
+            logger.info("Карта дня отправлена: user_id=%s", user_id)
+        except TelegramForbiddenError:
+            # Человек заблокировал бота — больше не шлём.
+            await asyncio.to_thread(set_daily_hour, user_id, None)
+        except Exception:
+            log_metrics("ERROR (DAILY)", error=True, user_id=user_id)
+
+    if now.hour not in CHECKIN_HOURS:
+        return
+
+    due = await asyncio.to_thread(
+        get_due_checkins,
+        now.isoformat(timespec="seconds"),
+        today
+    )
+
+    for reading in due:
+        await asyncio.to_thread(mark_checkin_sent, reading["id"])
+
+        try:
+            await send_checkin(reading)
+            logger.info("«Как сложилось?» отправлено: reading_id=%s", reading["id"])
+        except TelegramForbiddenError:
+            await asyncio.to_thread(
+                set_checkins_enabled,
+                reading["user_id"],
+                False
+            )
+        except Exception:
+            log_metrics("ERROR (CHECKIN)", error=True, reading_id=reading["id"])
+
+
+async def scheduler() -> None:
+    """Раз в минуту проверяет, кому пора отправить карту дня или «как сложилось?»."""
+
+    while True:
+        try:
+            await run_schedule_tick()
+        except Exception:
+            log_metrics("ERROR (SCHEDULER)", error=True)
+
+        await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+
+BOT_COMMANDS = [
+    BotCommand(command="start", description="Главное меню"),
+    BotCommand(command="new", description="Новый расклад"),
+    BotCommand(command="card", description="Значение карты: /card Башня"),
+    BotCommand(command="history", description="История раскладов"),
+    BotCommand(command="stats", description="Дневник и статистика"),
+    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="help", description="Помощь"),
+    BotCommand(command="reset", description="Сбросить текущий расклад"),
+    BotCommand(command="delete_my_data", description="Удалить все свои данные"),
+]
+
+
 async def main():
     init_database()
-    await dp.start_polling(bot)
+
+    try:
+        await bot.set_my_commands(BOT_COMMANDS)
+    except Exception:
+        logger.warning("Не удалось обновить меню команд", exc_info=True)
+
+    scheduler_task = asyncio.create_task(scheduler())
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler_task.cancel()
 

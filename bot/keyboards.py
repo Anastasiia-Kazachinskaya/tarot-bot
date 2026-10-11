@@ -308,9 +308,19 @@ def card_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+def _btn(text: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=data)
+
+
+def describe_daily_hour(hour: int | None) -> str:
+    return "выключена" if hour is None else f"{hour:02d}:00"
+
+
 def settings_keyboard(
     current: bool | None,
-    gender: str | None = None
+    gender: str | None = None,
+    daily_hour: int | None = None,
+    checkins_enabled: bool = True
 ) -> InlineKeyboardMarkup:
     def mark(value):
         return " ✅" if current == value else ""
@@ -320,44 +330,124 @@ def settings_keyboard(
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [_btn(f"🔄 Всегда да{mark(True)}", "settings:reversed:yes")],
+            [_btn(f"➡️ Всегда нет{mark(False)}", "settings:reversed:no")],
+            [_btn(f"❓ Спрашивать каждый раз{mark(None)}", "settings:reversed:ask")],
             [
-                InlineKeyboardButton(
-                    text=f"🔄 Всегда да{mark(True)}",
-                    callback_data="settings:reversed:yes"
+                _btn(f"Ж{mark_gender('f')}", "settings:gender:f"),
+                _btn(f"М{mark_gender('m')}", "settings:gender:m"),
+                _btn(f"Без рода{mark_gender(None)}", "settings:gender:none"),
+            ],
+            [_btn(f"🌅 Карта дня: {describe_daily_hour(daily_hour)}", "settings:daily")],
+            [
+                _btn(
+                    "📖 «Как сложилось?»: "
+                    + ("вкл" if checkins_enabled else "выкл"),
+                    "settings:checkins:toggle"
                 )
             ],
+            [_btn("⌂ Главное меню", "main_menu")],
+        ]
+    )
+
+
+DAILY_HOURS = (7, 8, 9, 10, 11, 12, 18, 21)
+
+
+def daily_hour_keyboard(
+    current: int | None,
+    prefix: str = "settings:daily_hour",
+    back: str | None = "settings"
+) -> InlineKeyboardMarkup:
+    def mark(hour):
+        return " ✅" if current == hour else ""
+
+    hours = [
+        _btn(f"{hour:02d}:00{mark(hour)}", f"{prefix}:{hour}")
+        for hour in DAILY_HOURS
+    ]
+
+    rows = [
+        hours[:4],
+        hours[4:],
+        [_btn(f"🚫 Не присылать{mark(None)}", f"{prefix}:off")],
+    ]
+
+    if back:
+        rows.append([_btn("← Назад", back)])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def onboarding_gender_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=f"➡️ Всегда нет{mark(False)}",
-                    callback_data="settings:reversed:no"
-                )
+                _btn("В женском", "onboard:gender:f"),
+                _btn("В мужском", "onboard:gender:m"),
             ],
+            [_btn("Без рода", "onboard:gender:none")],
+        ]
+    )
+
+
+def onboarding_reversed_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=f"❓ Спрашивать каждый раз{mark(None)}",
-                    callback_data="settings:reversed:ask"
-                )
+                _btn("🔄 Да, всегда", "onboard:reversed:yes"),
+                _btn("➡️ Нет", "onboard:reversed:no"),
             ],
+            [_btn("❓ Спрашивать каждый раз", "onboard:reversed:ask")],
+        ]
+    )
+
+
+def onboarding_daily_keyboard() -> InlineKeyboardMarkup:
+    return daily_hour_keyboard(
+        None,
+        prefix="onboard:daily",
+        back=None
+    )
+
+
+def repeat_question_keyboard(reading_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("📖 Открыть тот расклад", f"history_reading:{reading_id}")],
+            [_btn("🔮 Всё равно сделать новый", "repeat:go")],
+            [_btn("⌂ Главное меню", "main_menu")],
+        ]
+    )
+
+
+def checkin_keyboard(reading_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=f"Ж{mark_gender('f')}",
-                    callback_data="settings:gender:f"
-                ),
-                InlineKeyboardButton(
-                    text=f"М{mark_gender('m')}",
-                    callback_data="settings:gender:m"
-                ),
-                InlineKeyboardButton(
-                    text=f"Без рода{mark_gender(None)}",
-                    callback_data="settings:gender:none"
-                )
+                _btn("✅ Отозвалось", f"resonance:{reading_id}:yes"),
+                _btn("❌ Мимо", f"resonance:{reading_id}:no"),
             ],
-            [
-                InlineKeyboardButton(
-                    text="⌂ Главное меню",
-                    callback_data="main_menu"
-                )
-            ]
+            [_btn("📖 Открыть расклад", f"history_reading:{reading_id}")],
+            [_btn("🔕 Больше не спрашивать", "checkins:off")],
+        ]
+    )
+
+
+def daily_card_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("🔮 Сделать расклад", "new_reading")],
+            [_btn("⚙️ Время карты дня", "settings:daily")],
+        ]
+    )
+
+
+def delete_data_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("🗑 Да, удалить всё", "delete_data:confirm")],
+            [_btn("Отмена", "delete_data:cancel")],
         ]
     )
 
