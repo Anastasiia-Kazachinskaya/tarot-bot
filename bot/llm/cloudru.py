@@ -487,6 +487,11 @@ def _call_llm(
                 temperature=0.7,
                 presence_penalty=0,
                 top_p=1,
+                # Qwen3.x по умолчанию сначала «думает» и тратит на это
+                # max_tokens — тогда content приходит пустым.
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False}
+                },
                 messages=[
                     {
                         "role": "system",
@@ -519,12 +524,13 @@ def _call_llm(
 
     result = response.choices[0].message.content
 
+    finish_reason = response.choices[0].finish_reason
+
     if not result:
         raise ValueError(
-            "Cloud.ru вернул пустой ответ"
+            f"Cloud.ru вернул пустой ответ "
+            f"(model={MODEL}, finish_reason={finish_reason})"
         )
-
-    finish_reason = response.choices[0].finish_reason
 
     if finish_reason == "length":
         logger.warning(
