@@ -481,18 +481,11 @@ def _call_llm(
 
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                max_tokens=max_tokens,
-                temperature=0.7,
-                presence_penalty=0,
-                top_p=1,
-                # Qwen3.x по умолчанию сначала «думает» и тратит на это
-                # max_tokens — тогда content приходит пустым.
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False}
-                },
-                messages=[
+            params = {
+                "model": MODEL,
+                "max_tokens": max_tokens,
+                "temperature": 0.7,
+                "messages": [
                     {
                         "role": "system",
                         "content": system_prompt
@@ -501,8 +494,18 @@ def _call_llm(
                         "role": "user",
                         "content": prompt
                     }
-                ]
-            )
+                ],
+            }
+
+            # Qwen3.x по умолчанию сначала «думает» и тратит на это
+            # max_tokens — тогда content приходит пустым. Другим моделям
+            # этот параметр не нужен, а некоторые его отвергают.
+            if MODEL.startswith("Qwen/"):
+                params["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False}
+                }
+
+            response = client.chat.completions.create(**params)
             break
 
         except RETRYABLE_ERRORS as error:
